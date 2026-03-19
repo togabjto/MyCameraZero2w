@@ -18,7 +18,7 @@ if not os.path.exists(SAVE_DIR):
 cmd = [
     "rpicam-vid", "-t", "0", "--inline", "-o", "-", 
     "--width", "640", "--height", "480", "--nopreview", 
-    "--framerate", "20", "--codec", "mjpeg"
+    "--framerate", "10", "--codec", "mjpeg"
 ]
 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**6)
 
@@ -45,7 +45,8 @@ try:
             
             frame = cv2.imdecode(np.frombuffer(jpg_data, dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None: continue
-
+            
+            search_frame = cv2.resize(frame, (160, 90))
             # --- [Motion Detection Logic] ---
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray_blur = cv2.GaussianBlur(gray, (21, 21), 0)
