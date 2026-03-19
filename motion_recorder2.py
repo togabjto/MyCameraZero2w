@@ -1,60 +1,49 @@
-while True:
-        # ストリームからJPGを切り出す（ここはそのまま）
-        buffer += proc.stdout.read(4096)
-        a = buffer.find(b'\xff\xd8')
-        b = buffer.find(b'\xff\xd9')
-        
-        if a != -1 and b != -1:
-            jpg_data = buffer[a:b+2]
-            buffer = buffer[b+2:]
-            
-            frame = cv2.imdecode(np.frombuffer(jpg_data, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if frame is None: continue
+import subprocess
+import time
+import os
 
-            # --- [1. 負荷削減：解析用に超軽量化] ---
-            # 1280x720の重い処理を避けるため、160x90にリサイズして計算
-            search_frame = cv2.resize(frame, (160, 90))
-            gray = cv2.cvtColor(search_frame, cv2.COLOR_BGR2GRAY)
-            gray_blur = cv2.GaussianBlur(gray, (21, 21), 0)
+# --- [設定] ---
+FILENAME = "gpu_test.mp4" # 保存するファイル名
+RECORD_SECONDS = 10       # 録画する時間（秒）
 
-            if avg is None:
-                # リサイズしたサイズに合わせて背景を初期化
-                avg = gray_blur.copy().astype("float")
-                continue
+# もし古いファイルがあったら消しておく
+if os.path.exists(FILENAME):
+    os.remove(FILENAME)
 
-            # --- [2. 動体検知ロジック（軽量画像で実行）] ---
-            cv2.accumulateWeighted(gray_blur, avg, LEARNING_RATE)
-            frame_delta = cv2.absdiff(gray_blur, cv2.convertScaleAbs(avg))
-            thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+# --- [rpicam-vid コマンド] ---
+# OpenCVを通さず、直接ファイル(-o)に書き出すので爆速・低負荷です。
+cmd = [
+    "rpicam-vid",
+    "-t", str(RECORD_SECONDS * 1000), # ミリ秒指定
+    "--inline",          # 再生互換性のためのヘッダ挿入
+    "-o", FILENAME,      # ★直接ファイルに保存！
+    "--width", "1920",   # フルHD
+    "--height", "1080",
+    "--framerate", "30", # 30fps
+    "--codec", "h264",   # ★GPU（ハードウェアエンコーダ）を使用
+    "--nopreview"        # 画面表示なし（負荷軽減）
+]
 
-            max_area = 0
-            if contours:
-                # 面積の閾値もリサイズに合わせて調整が必要（160x90なら500〜1000くらいが目安）
-                max_area = max([cv2.contourArea(c) for c in contours])
+print(f"=== GPU録画テスト開始 ({RECORD_SECONDS}秒間) ===")
+print(f"保存先: {FILENAME}")
+print("実行中... (キーボード操作は不要です)")
 
-            # --- [3. 録画制御（保存は高画質な frame を使用）] ---
-            current_time = time.time()
-            timestamp_str = datetime.now().strftime("%H:%M:%S")
+try:
+    # コマンドを実行して、終わるまで待つ
+    # Pythonは単にコマンドが終わるのを待つだけなのでCPU負荷はほぼ0です。
+    subprocess.run(cmd, check=True)
+    
+    print("=== 録画完了！ ===")
+    
+    # ファイルができたか確認
+    if os.path.exists(FILENAME):
+        size = os.path.getsize(FILENAME) / (1024 * 1024) # MB単位
+        print(f"ファイルが正常に作成されました: {FILENAME} ({size:.1f} MB)")
+    else:
+        print("エラー: ファイルが作成されませんでした。")
 
-            if max_area > THRESHOLD_AREA:
-                record_until = current_time + EXTEND_SECONDS
-                if not is_recording:
-                    filename = os.path.join(SAVE_DIR, datetime.now().strftime("%Y%m%d_%H%M%S.mp4"))
-                    h, w = frame.shape[:2] # 高画質側のサイズ(1280x720)を取得
-                    # フレームレートを cmd の設定(10.0)に合わせる
-                    out = cv2.VideoWriter(filename, fourcc, 10.0, (w, h)) 
-                    is_recording = True
-                    print(f"\n[{timestamp_str}] >>> RECORDING STARTED: {filename}")
-
-            if is_recording:
-                out.write(frame) # ここは高画質な「元のframe」を書き込む
-                
-                if current_time > record_until:
-                    out.release()
-                    is_recording = False
-                    # avg = None  <-- ここ消すと背景が安定します（お好みで）
-                    print(f"\n[{timestamp_str}] <<< RECORDING STOPPED & SAVED")
-
-            status = "REC" if is_recording else "---"
-            print(f"\r[{timestamp_str}] Status: {status} | Area: {max_area:6.0f} ", end="", flush=True)
+except subprocess.CalledProcessError as e:
+    print(f"\nエラーが発生しました。カメラが接続されているか確認してください。")
+    print(f"コマンドのエラー内容: {e}")
+except KeyboardInterrupt:
+    print("\n中断されました。")
