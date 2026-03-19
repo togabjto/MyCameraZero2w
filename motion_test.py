@@ -66,18 +66,21 @@ try:
             if area > max_area:
                 max_area = area
 
-        # 4. Console Logging
+# 4. Console Logging (Overwriting the same line)
         timestamp = datetime.now().strftime("%H:%M:%S")
         
+        # Determine status string
         if max_area > THRESHOLD_AREA:
-            print(f"[{timestamp}] MOTION! Area: {max_area:6.0f} -> [LOG: START RECORDING]")
+            status = " [!] MOTION DETECTED "
+            # When motion starts, we can optionally print a new line to keep it in history
+            # if is_detecting == False: print(f"\n[{timestamp}] Recording Triggered!")
             is_detecting = True
         else:
-            if is_detecting:
-                print(f"[{timestamp}] Quiet... Area: {max_area:6.0f} -> [LOG: STOP RECORDING]")
-                is_detecting = False
-            # Current area monitor (overwrite line)
-            print(f"[{timestamp}] Area: {max_area:6.0f}", end="\r")
+            status = " [-] Monitoring...  "
+            is_detecting = False
 
+        # \r moves the cursor to the start of the line. 
+        # We add spaces at the end to clear any old long characters.
+        print(f"\r[{timestamp}] {status} | Max Area: {max_area:6.0f}    ", end="", flush=True)
 except KeyboardInterrupt:
     print("\nStopping...")
