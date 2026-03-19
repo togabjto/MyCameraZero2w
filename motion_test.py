@@ -13,7 +13,7 @@ def capture_frame():
     # --width/height: Lower resolution makes processing FASTER
     cmd = [
         "rpicam-still", 
-        "-t", "1", 
+        "-t", "0.1", 
         "-o", "-", 
         "--immediate", 
         "--nopreview", 
