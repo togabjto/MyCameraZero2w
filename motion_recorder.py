@@ -18,7 +18,7 @@ if not os.path.exists(SAVE_DIR):
 cmd = [
     "rpicam-vid", "-t", "0", "--inline", "-o", "-", 
     "--width", "640", "--height", "480", "--nopreview", 
-    "--framerate", "10", "--codec", "mjpeg"
+    "--framerate", "10", "--codec", "h264"
 ]
 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**6)
 
@@ -45,7 +45,7 @@ try:
             
             frame = cv2.imdecode(np.frombuffer(jpg_data, dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None: continue
-            
+
             search_frame = cv2.resize(frame, (160, 90))
             # --- [Motion Detection Logic] ---
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -75,7 +75,7 @@ try:
                     # 新規録画開始
                     filename = os.path.join(SAVE_DIR, datetime.now().strftime("%Y%m%d_%H%M%S.mp4"))
                     h, w = frame.shape[:2]
-                    out = cv2.VideoWriter(filename, fourcc, 20.0, (w, h))
+                    out = cv2.VideoWriter(filename, fourcc, 10.0, (w, h))
                     is_recording = True
                     print(f"\n[{timestamp_str}] >>> RECORDING STARTED: {filename}")
 
