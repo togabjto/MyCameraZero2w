@@ -4,28 +4,28 @@ import os
 import time
 
 def take_still_image():
-    # Set the save directory to ~/MyC/img
-    save_dir = os.path.expanduser("~/MyC/img")
+    # Use relative path: 'img' folder in the current directory
+    save_dir = "img"
     
-    # Create the img directory if it does not exist
+    # Create the directory if it does not exist
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
         print(f"Created directory: {save_dir}")
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Join path and filename
+    # Build the filename path
     filename = os.path.join(save_dir, f"image_{timestamp}.jpg")
 
-    print(f"[{timestamp}] Capturing image...")
+    print(f"[{timestamp}] Capturing image with rpicam-still...")
 
     try:
-        # Execute capture command
-        # --immediate: no delay, --nopreview: no window
-        subprocess.run(["libcamera-still", "-o", filename, "--immediate", "--nopreview"], check=True)
+        # Replaced 'libcamera-still' with 'rpicam-still' for 64-bit Lite OS
+        # --immediate: no countdown, --nopreview: no GUI needed
+        subprocess.run(["rpicam-still", "-o", filename, "--immediate", "--nopreview"], check=True)
         print(f"Save successful: {filename}")
     except subprocess.CalledProcessError as e:
         print(f"Capture Error: {e}")
 
 if __name__ == "__main__":
-    # Test capture
+    # Execute test capture
     take_still_image()
