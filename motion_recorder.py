@@ -3,37 +3,45 @@ import numpy as np
 import subprocess
 import time
 import os
+import shutil
 from datetime import datetime
 
 # --- [Settings] ---
-# 解析用画像を1/64（面積比）に小さくするので、閾値も小さめに設定します
-THRESHOLD_AREA = 100  # 小さな動きも拾うなら50〜100、大きな物だけなら300〜
-LEARNING_RATE = 0.05   # 少しゆっくり背景に馴染ませる設定
-EXTEND_SECONDS = 5.0   # 動きが止まった後、何秒間録画を続けるか
 SAVE_DIR = "movie"     # 保存先ディレクトリ
+MAX_DISK_USAGE = 80    # SDカードの使用率が何%を超えたら古い動画を消すか
+THRESHOLD_AREA = 100   # 動き検知の感度（160x90リサイズ用）
+LEARNING_RATE = 0.05
+EXTEND_SECONDS = 5.0   # 動きが止まった後の録画継続時間
+FPS_SETTING = 10.0     # Zero 2 Wに最適なフレームレート
 
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 
-# ラズパイ側の出力設定（10fps）
-FPS_SETTING = 10.0
+# --- [Functions] ---
+def cleanup_disk():
+    """SDカードの空き容量をチェックし、古い動画を削除する"""
+    usage = shutil.disk_usage("/")
+    percent = (usage.used / usage.total) * 100
+    if percent > MAX_DISK_USAGE:
+        # 保存ディレクトリ内のファイルを古い順に並べる
+        files = [os.path.join(SAVE_DIR, f) for f in os.listdir(SAVE_DIR) if f.endswith('.mp4')]
+        files.sort(key=os.path.getmtime)
+        if files:
+            print(f"\n[Disk Cleanup] Usage {percent:.1f}% exceeds {MAX_DISK_USAGE}%. Deleting: {files[0]}")
+            os.remove(files[0])
 
-# --- [視野角最大化 + 720p / 10fps / GPUエンコード] ---
+# --- [rpicam-vid Command] ---
 cmd = [
     "rpicam-vid",
     "-t", "0",
     "--inline",
     "-o", "-",
-    "--width", "1280",    # 保存する動画の幅
-    "--height", "720",    # 保存する動画の高さ
+    "--width", "1280",    # 録画解像度
+    "--height", "720",
     "--framerate", str(int(FPS_SETTING)),
     "--codec", "h264",
-    # --- [ここが視野角最大化のキモ] ---
-    # センサーの最大解像度に近い値をビューファインダーに指定することで、
-    # センサー全体を読み取ってからリサイズ（ダウンスケール）させます。
-    "--viewfinder-width", "2304", 
+    "--viewfinder-width", "2304", # 視野角最大化のための設定
     "--viewfinder-height", "1296",
-    # -------------------------------
     "--profile", "high",
     "--level", "4.2",
     "--nopreview",
@@ -42,21 +50,24 @@ cmd = [
 ]
 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**6)
 
-# 録画用変数
+# --- [Variables] ---
 avg = None
 out = None
 is_recording = False
 record_until = 0
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+buffer = b"" # バイナリバッファ
 
-print(f"--- Surveillance Started (Saving to ./{SAVE_DIR}) ---")
-print("Optimization: Motion detection is downsampled to 160x90.")
+print(f"--- Surveillance Fully Optimized (Saving to ./{SAVE_DIR}) ---")
 
 try:
-    buffer = b""
     while True:
-        # ストリームからJPGを切り出す
-        buffer += proc.stdout.read(4096)
+        # カメラからバイナリデータを読み込み
+        data = proc.stdout.read(4096)
+        if not data: break
+        buffer += data
+        
+        # JPGの区切り（FF D8 ... FF D9）を探す
         a = buffer.find(b'\xff\xd8')
         b = buffer.find(b'\xff\xd9')
         
@@ -64,11 +75,11 @@ try:
             jpg_data = buffer[a:b+2]
             buffer = buffer[b+2:]
             
+            # 画像デコード
             frame = cv2.imdecode(np.frombuffer(jpg_data, dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None: continue
 
-            # --- [1. 解析用データの軽量化（ここが最大のポイント）] ---
-            # 1280x720の全ピクセルを計算するとZero 2 Wは死ぬので、160x90に落とす
+            # 1. 負荷軽減のために解析用画像をリサイズ
             search_frame = cv2.resize(frame, (160, 90))
             gray = cv2.cvtColor(search_frame, cv2.COLOR_BGR2GRAY)
             gray_blur = cv2.GaussianBlur(gray, (21, 21), 0)
@@ -77,7 +88,7 @@ try:
                 avg = gray_blur.copy().astype("float")
                 continue
 
-            # --- [2. 軽量データで動体検知計算] ---
+            # 2. 動体検知計算
             cv2.accumulateWeighted(gray_blur, avg, LEARNING_RATE)
             frame_delta = cv2.absdiff(gray_blur, cv2.convertScaleAbs(avg))
             thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
@@ -87,28 +98,29 @@ try:
             if contours:
                 max_area = max([cv2.contourArea(c) for c in contours])
 
-            # --- [3. 録画制御（保存は元の frame を使用）] ---
+            # 3. 録画制御
             current_time = time.time()
             timestamp_str = datetime.now().strftime("%H:%M:%S")
 
             if max_area > THRESHOLD_AREA:
                 record_until = current_time + EXTEND_SECONDS
                 if not is_recording:
+                    # 録画開始前にディスク掃除を実行
+                    cleanup_disk()
+                    
                     filename = os.path.join(SAVE_DIR, datetime.now().strftime("%Y%m%d_%H%M%S.mp4"))
-                    h, w = frame.shape[:2] # 1280x720を取得
-                    # 動画ファイル側のFPSをrpicam-vidの設定(10.0)に合わせる
+                    h, w = frame.shape[:2]
                     out = cv2.VideoWriter(filename, fourcc, FPS_SETTING, (w, h))
                     is_recording = True
-                    print(f"\n[{timestamp_str}] >>> RECORDING STARTED: {filename}")
+                    print(f"\n[{timestamp_str}] >>> REC START: {filename}")
 
             if is_recording:
-                out.write(frame) # 高画質なフレームを保存
+                out.write(frame) # 高画質フレームを書き込み
                 
                 if current_time > record_until:
                     out.release()
                     is_recording = False
-                    # 背景はリセットせず継続したほうが検知が安定します
-                    print(f"\n[{timestamp_str}] <<< RECORDING STOPPED & SAVED")
+                    print(f"\n[{timestamp_str}] <<< REC STOPPED")
 
             # ログ表示
             status = "REC" if is_recording else "---"
