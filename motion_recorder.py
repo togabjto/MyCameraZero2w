@@ -6,16 +6,17 @@ import os
 from datetime import datetime
 
 # --- [Settings] ---
-THRESHOLD_AREA = 100   # 160x90にリサイズするので、これくらいが適正
+THRESHOLD_AREA = 100   
 LEARNING_RATE = 0.05
-EXTEND_SECONDS = 5.0   # 動きが止まった後の録画継続時間
+EXTEND_SECONDS = 5.0   
 SAVE_DIR = "movie"
-FPS_SETTING = 10.0     # Zero 2 Wで安定するフレームレート
+FPS_SETTING = 10.0     
 
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 
-# --- [GPUエンコード (H.264) を使うコマンド] ---
+# --- [GPUエンコード (H.264) コマンド] ---
+# --inline を入れることで、途中からでも動画を読み込めるようにします
 cmd = [
     "rpicam-vid",
     "-t", "0",
@@ -24,17 +25,18 @@ cmd = [
     "--width", "1280",
     "--height", "720",
     "--framerate", str(int(FPS_SETTING)),
-    "--codec", "h264",    # ここでハードウェアエンコーダ（GPU）を使用！
+    "--codec", "h264",
     "--nopreview",
     "--flush"
 ]
 
-# カメラプロセス起動
+# カメラプロセスを起動
 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**6)
 
-# ★OpenCVのVideoCaptureでパイプから直接読み込む
-# H.264のストリームをOpenCV(FFmpeg)が自動で「画像」に変換してくれます
-cap = cv2.VideoCapture("pipe:0", cv2.CAP_FFMPEG)
+# ★重要：VideoCapture の読み込みを工夫
+# pipe:0 の代わりに fd://0 (ファイル記述子0) を使うと安定することがあります
+# また、FFMPEG 経由であることを明示します
+cap = cv2.VideoCapture("fd://0", cv2.CAP_FFMPEG)
 
 # 録画用変数
 avg = None
@@ -43,16 +45,18 @@ is_recording = False
 record_until = 0
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 
-print(f"--- Surveillance Started (GPU H.264 / 10fps) ---")
+print(f"--- Surveillance Started (GPU H.264 / FOV Max) ---")
 
 try:
     while True:
-        # 1. 1フレームを読み込む（ここでH.264を画像に展開している）
         ret, frame = cap.read()
+        
+        # 映像が届かない場合は少し待ってリトライ
         if not ret:
-            break
+            time.sleep(0.1)
+            continue
 
-        # 2. 【負荷軽減】解析用に160x90にリサイズ
+        # --- [1. 解析用データの軽量化] ---
         search_frame = cv2.resize(frame, (160, 90))
         gray = cv2.cvtColor(search_frame, cv2.COLOR_BGR2GRAY)
         gray_blur = cv2.GaussianBlur(gray, (21, 21), 0)
@@ -61,7 +65,7 @@ try:
             avg = gray_blur.copy().astype("float")
             continue
 
-        # 3. 動体検知（search_frame を使用）
+        # --- [2. 動体検知計算] ---
         cv2.accumulateWeighted(gray_blur, avg, LEARNING_RATE)
         frame_delta = cv2.absdiff(gray_blur, cv2.convertScaleAbs(avg))
         thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
@@ -71,7 +75,7 @@ try:
         if contours:
             max_area = max([cv2.contourArea(c) for c in contours])
 
-        # 4. 録画制御
+        # --- [3. 録画制御] ---
         current_time = time.time()
         timestamp_str = datetime.now().strftime("%H:%M:%S")
 
@@ -80,12 +84,13 @@ try:
             if not is_recording:
                 filename = os.path.join(SAVE_DIR, datetime.now().strftime("%Y%m%d_%H%M%S.mp4"))
                 h, w = frame.shape[:2]
+                # 動画保存のFPSもカメラと合わせる
                 out = cv2.VideoWriter(filename, fourcc, FPS_SETTING, (w, h))
                 is_recording = True
                 print(f"\n[{timestamp_str}] >>> REC START: {filename}")
 
         if is_recording:
-            out.write(frame) # 保存は高画質な元のサイズ
+            out.write(frame) # 元の frame を保存
             if current_time > record_until:
                 out.release()
                 is_recording = False
