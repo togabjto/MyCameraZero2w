@@ -1,12 +1,16 @@
 import cv2
+import time
 
-print("--- カメラを起動中... ちょっと待ってね ---")
+print("--- Starting camera... Please wait ---")
 
-# カメラを掴む（Legacyモードなので0番）
+# カメラを掴む
 cap = cv2.VideoCapture(0)
 
+# 【超重要】カメラが明るさを調整するまで2秒待つ
+time.sleep(2)
+
 if not cap.isOpened():
-    print("【失敗】カメラが見つからない！ケーブルの接続を確認してみて。")
+    print("[ERROR] Cannot find the camera! Check the cable.")
 else:
     # 1枚だけ映像を読み込む
     ret, frame = cap.read()
@@ -14,9 +18,9 @@ else:
     if ret:
         # 画像として保存する
         cv2.imwrite("test_shot.jpg", frame)
-        print("【大成功】カメラ動いてるぜ！ 'test_shot.jpg' を保存したよ！")
+        print("[SUCCESS] Camera is working! Saved 'test_shot.jpg'")
     else:
-        print("【失敗】カメラはいるけど、映像が真っ暗で読み込めない…。")
+        print("[ERROR] Camera is found, but the picture is black/empty.")
 
 # カメラを解放する
 cap.release()
