@@ -1,26 +1,34 @@
 import cv2
 import time
 
-print("--- Starting camera... Please wait ---")
+print("--- Starting camera with low resolution ---")
 
-# カメラを掴む
 cap = cv2.VideoCapture(0)
 
-# 【超重要】カメラが明るさを調整するまで2秒待つ
+# 【ここがF3くんのアイデア！】解像度を640x480に下げる
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+# カメラの起動を待つ
 time.sleep(2)
 
 if not cap.isOpened():
-    print("[ERROR] Cannot find the camera! Check the cable.")
+    print("[ERROR] Cannot find the camera.")
 else:
-    # 1枚だけ映像を読み込む
+    print("Camera opened. Clearing buffer...")
+    
+    # 【プロの技】最初の5フレームは暗かったり不安定なので、読み込んで捨てる
+    for _ in range(5):
+        cap.read()
+        time.sleep(0.1)
+
+    # いざ、本命の1枚を撮影！
     ret, frame = cap.read()
     
     if ret:
-        # 画像として保存する
         cv2.imwrite("test_shot.jpg", frame)
         print("[SUCCESS] Camera is working! Saved 'test_shot.jpg'")
     else:
-        print("[ERROR] Camera is found, but the picture is black/empty.")
+        print("[ERROR] Camera is found, but the picture is STILL black/empty.")
 
-# カメラを解放する
 cap.release()
