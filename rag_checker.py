@@ -1,52 +1,45 @@
 import time
 import subprocess
-import os
 
-print("--- Reverse Camera Lag Test (H.264 -> RAW -> H.264) ---")
+print("--- Fair Camera Switch Lag Test ---")
+print("Cycle: RAW -> H.264 -> RAW -> H.264\n")
 
-# Step 1: Initial H.264 Warm-up (The "First Boot")
-print("1. Initializing and warming up H.264 (Auto-focus & Exposure)...")
-cmd_video = [
-    "libcamera-vid",
-    "-t", "1000",
-    "--width", "1280",
-    "--height", "720",
-    "--nopreview",
-    "-o", "warmup.mp4"
-]
-subprocess.run(cmd_video, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-print("Warm-up complete. Camera is now closed by libcamera.")
+def run_test(mode, cmd):
+    print(f"Starting {mode} 1-second recording...")
+    start_time = time.time()
+    
+    # Run the command silently
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    # Subtract exactly 1 second of recording time to find the setup/teardown lag
+    lag = total_time - 1.0
+    
+    print(f"[{mode} Result] Total: {total_time:.3f}s | Pure Lag: {lag:.3f}s\n")
+    return lag
 
-# Step 2: Measure H.264 -> RAW
-print("2. Switching to RAW mode...")
-start_to_raw = time.time()
-try:
-    fd = os.open("/dev/video0", os.O_RDWR)
-except OSError:
-    print("Error: Could not open /dev/video0.")
-    exit()
-end_to_raw = time.time()
-lag_to_raw = end_to_raw - start_to_raw
+# Commands for both modes
+cmd_raw = ["libcamera-raw", "-t", "1000", "-o", "test_out.raw"]
+cmd_h264 = ["libcamera-vid", "-t", "1000", "--width", "1280", "--height", "720", "--nopreview", "-o", "test_out.mp4"]
 
-time.sleep(1) # Pretend we are monitoring for a second
+# --- Cycle 1 ---
+print(">>> CYCLE 1 (Cold Start) <<<")
+lag_raw_1 = run_test("RAW", cmd_raw)
+lag_h264_1 = run_test("H.264", cmd_h264)
 
-# Step 3: Measure RAW -> H.264 (The crucial test!)
-print("3. Switching back to H.264 mode...")
-start_to_h264 = time.time()
-
-# Release RAW camera
-os.close(fd)
-
-# Start H.264 again
-subprocess.run(cmd_video, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-end_to_h264 = time.time()
-
-# Calculate H.264 lag (subtracting the 1 second record time)
-lag_to_h264 = (end_to_h264 - start_to_h264) - 1.0
+# --- Cycle 2 ---
+print(">>> CYCLE 2 (Warm Start) <<<")
+lag_raw_2 = run_test("RAW", cmd_raw)
+lag_h264_2 = run_test("H.264", cmd_h264)
 
 print("========================================")
-print("               RESULTS                  ")
+print("             FINAL RESULTS              ")
 print("========================================")
-print(f"Lag (H.264 -> RAW) : {lag_to_raw:.3f} seconds")
-print(f"Lag (RAW -> H.264) : {lag_to_h264:.3f} seconds")
+print(f"Cycle 1 RAW Lag   : {lag_raw_1:.3f} seconds")
+print(f"Cycle 1 H.264 Lag : {lag_h264_1:.3f} seconds")
+print("----------------------------------------")
+print(f"Cycle 2 RAW Lag   : {lag_raw_2:.3f} seconds")
+print(f"Cycle 2 H.264 Lag : {lag_h264_2:.3f} seconds")
 print("========================================")
