@@ -16,7 +16,7 @@ int main() {
         perror("[ERROR] Failed to get format");
         close(fd); return 1;
     }
-
+    printf("hello\n");
     printf("--- Current Camera Settings ---\n");
     printf("Format: %c%c%c%c\n", 
            fmt.fmt.pix.pixelformat & 0xFF, (fmt.fmt.pix.pixelformat >> 8) & 0xFF,
