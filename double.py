@@ -1,64 +1,90 @@
-import cv2
 import time
 import ctypes
 import numpy as np
 from numpy.ctypeslib import ndpointer
+from picamera2 import Picamera2
+from picamera2.encoders import H264Encoder
+from picamera2.outputs import FileOutput
 
 # ==========================================
 # 1. C言語のライブラリを読み込む
 # ==========================================
-lib = ctypes.CDLL('./libmotion.so') # 先ほど作ったライブラリを指定
-
-# C言語の関数「detect_motion」の引数と戻り値の型を定義
+lib = ctypes.CDLL('./libmotion.so')
 lib.detect_motion.argtypes = [ndpointer(ctypes.c_uint8, flags="C_CONTIGUOUS"), ctypes.c_int, ctypes.c_int]
 lib.detect_motion.restype = ctypes.c_int
 
 # ==========================================
-# 2. カメラと録画の準備
+# 2. Picamera2の設定 (デュアルストリーム)
 # ==========================================
-cap = cv2.VideoCapture(0) # カメラ起動
-width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-fps = 10.0 # フレームレート
+picam2 = Picamera2()
+# main=録画用(1080p), lores=動体検知用(320x240の軽い映像)
+config = picam2.create_video_configuration(
+    main={"size": (1920, 1080), "format": "YUV420"},
+    lores={"size": (320, 240), "format": "YUV420"}
+)
+picam2.configure(config)
+picam2.start()
 
-# H.264やMP4ではなく、ラズパイと相性の良い XVID と .avi に変更！
-fourcc = cv2.VideoWriter_fourcc(*'XVID')
-out = cv2.VideoWriter('test_record.avi', fourcc, fps, (width, height))
+print("カメラの準備中...")
+time.sleep(2) # 明るさやピントが合うまで待つ
 
-print("録画を開始します（10秒間）...")
+# ==========================================
+# 3. 録画と「字幕」の準備
+# ==========================================
+# Picamera2のハードウェアエンコーダを使って、完璧なMP4を作る
+encoder = H264Encoder(bitrate=2000000)
+output = FileOutput("test_record.mp4")
+
+print("10秒間の録画（Picamera2 1080p MP4）を開始します...")
+picam2.start_recording(encoder, output)
 
 start_time = time.time()
 
+# 字幕データ保存用
+subtitles = []
+sub_index = 1
+
+# 字幕の時間を計算する便利関数
+def format_srt_time(seconds):
+    ms = int((seconds % 1) * 1000)
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
 # ==========================================
-# 3. メインループ（10秒間繰り返す）
+# 4. メインループ（10秒間監視）
 # ==========================================
 while (time.time() - start_time) < 10.0:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    current_sec = time.time() - start_time
 
-    # C言語の動体検知用に、画像を白黒にしてサイズを小さくする（負荷軽減）
-    # ※計算用に小さくするだけで、録画自体は元の高画質なframeを使います
-    small_frame = cv2.resize(frame, (320, 240))
-    gray_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+    # 【超エコロジー】OpenCVを使わず、YUVデータの「Y(明るさ=白黒)」成分だけを直接抜き取る！
+    lores_yuv = picam2.capture_array("lores")
+    gray_frame = lores_yuv[:240, :320].copy() 
 
-    # C言語のライブラリを呼び出して動体検知！
-    # 戻り値が1なら検知、0なら未検知
+    # C言語のライブラリに白黒画像を渡して動体検知
     is_moving = lib.detect_motion(gray_frame, 320, 240)
 
-    # もし動体を検知していたら、映像の右下にテキストを入れる
     if is_moving == 1:
-        text = "Motion Detected!"
-        # cv2.putText(画像, 文字, 位置(x,y), フォント, サイズ, 色(BGR), 太さ)
-        cv2.putText(frame, text, (width - 350, height - 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+        print(f"[{current_sec:.1f}秒] 動体検知！")
+        
+        # 検知した瞬間の時間を記録し、字幕データを作る（0.5秒間表示）
+        start_srt = format_srt_time(current_sec)
+        end_srt = format_srt_time(current_sec + 0.5)
+        
+        # {\an3} は「画面右下」に字幕を配置する mpv のコマンドです
+        subtitles.append(f"{sub_index}\n{start_srt} --> {end_srt}\n{{\\an3}}動体検知しました\n\n")
+        sub_index += 1
 
-    # テキストが合成された映像を録画ファイルに書き込む
-    out.write(frame)
+    time.sleep(0.1) # CPUを休ませる
 
 # ==========================================
-# 4. お片付け
+# 5. お片付けと字幕ファイルの作成
 # ==========================================
-cap.release()
-out.release()
-print("10秒間の録画が完了し、test_record.mp4 を保存しました。")
+picam2.stop_recording()
+picam2.stop()
+
+# 字幕ファイル (.srt) を作成して保存
+with open("test_record.srt", "w", encoding="utf-8") as f:
+    f.writelines(subtitles)
+
+print("録画完了！ test_record.mp4 と test_record.srt を保存しました。")
