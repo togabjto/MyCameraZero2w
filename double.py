@@ -29,8 +29,8 @@ width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 fps = 15.0
 
-# ★ MP4ではなく、軽くて安全な AVI (XVID) に変更
-fourcc = cv2.VideoWriter_fourcc(*'XVID')
+# XVIDを捨てて、絶対に失敗しない MJPG に変更！
+fourcc = cv2.VideoWriter_fourcc(*'MJPG')
 out = cv2.VideoWriter('test_record.avi', fourcc, fps, (width, height))
 
 print(f"録画を開始します... (AVI形式, {width}x{height})")
