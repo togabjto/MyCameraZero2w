@@ -45,10 +45,6 @@ config = picam2.create_video_configuration(
 picam2.configure(config)
 picam2.start()
 
-# 【重要な修正】エンコーダ(録画チップ)は外で1回だけ作る！(フリーズ防止)
-h264_encoder = H264Encoder(bitrate=2000000)
-
-# flush=True をつけることで、文字化けせず確実にターミナルに表示させます
 print("\n" + "="*40, flush=True)
 print(" SYSTEM READY: Surveillance Camera", flush=True)
 print(f" SAVE DIR: {os.path.abspath(MOVIE_DIR)}/", flush=True)
@@ -57,8 +53,8 @@ time.sleep(2)
 
 is_recording = False
 record_until = 0
-temp_filename = "temp_raw.h264"
 current_file_num = 0
+temp_filename = "" # 一時ファイル名
 
 print("[WAITING] Monitoring for motion...", flush=True)
 
@@ -67,17 +63,11 @@ try:
         current_time = time.time()
 
         # ==========================================
-        # 4. Motion Detection
+        # 4. Motion Detection (絶対に立ち止まらない)
         # ==========================================
-        try:
-            lores_yuv = picam2.capture_array("lores")
-        except Exception as e:
-            # 万が一カメラが詰まってもエラー落ちさせずにスキップ
-            print(f"[ERROR] Camera skipped a frame: {e}", flush=True)
-            time.sleep(0.5)
-            continue
-
+        lores_yuv = picam2.capture_array("lores")
         gray_frame = np.ascontiguousarray(lores_yuv[:240, :320])
+        
         is_moving = lib.detect_motion(gray_frame, 320, 240)
 
         if is_moving == 1:
@@ -87,35 +77,33 @@ try:
                 current_file_num = get_next_file_number()
                 filename_base = f"{current_file_num:04d}" 
                 
+                # 🌟 今回は一時ファイル名も毎回変える（裏方と処理がぶつからないように）
+                temp_filename = f"temp_{filename_base}.h264"
+                
                 print(f"\n[DETECTED] Motion! Starting record: {filename_base}.mp4", flush=True)
                 
+                encoder = H264Encoder(bitrate=2000000)
                 output = FileOutput(temp_filename)
-                picam2.start_recording(h264_encoder, output)
+                picam2.start_recording(encoder, output)
                 is_recording = True
-            else:
-                # 録画中の延長ログ (英語)
-                pass # ログがうるさい場合はこのようにpassにしておきます
 
         # ==========================================
-        # 5. Stop Recording & Convert
+        # 5. Stop Recording & Convert in Background
         # ==========================================
         if is_recording and current_time >= record_until:
             picam2.stop_recording()
             is_recording = False
-            time.sleep(0.5) # チップが落ち着くまで一瞬待つ（これ超大事）
             
             final_mp4 = os.path.join(MOVIE_DIR, f"{current_file_num:04d}.mp4")
-            print(f"[STOP] No motion for 10s. Converting to MP4...", flush=True)
+            print(f"[STOP] No motion for 10s. Converting in BACKGROUND...", flush=True)
             
-            subprocess.run(["ffmpeg", "-y", "-framerate", "30", "-i", temp_filename, "-c", "copy", final_mp4], 
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # 🌟【最重要】subprocess.Popen を使い、裏方に変換と削除を丸投げする！
+            # これによりPythonは1ミリ秒も待たずに次の監視(capture_array)に戻れる
+            cmd = f"ffmpeg -y -framerate 30 -i {temp_filename} -c copy {final_mp4} && rm {temp_filename}"
+            subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            if os.path.exists(temp_filename):
-                os.remove(temp_filename)
-                
-            print(f"[SAVED] {final_mp4} has been saved successfully.", flush=True)
             print("-" * 40, flush=True)
-            print("[WAITING] Resuming motion detection...", flush=True)
+            print("[WAITING] Resuming motion detection instantly...", flush=True)
             print("-" * 40 + "\n", flush=True)
 
         time.sleep(0.05) 
@@ -125,7 +113,8 @@ except KeyboardInterrupt:
 finally:
     if is_recording:
         picam2.stop_recording()
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename) 
+    # 終了時、もしゴミが残っていたら消す
+    if temp_filename and os.path.exists(temp_filename):
+        os.remove(temp_filename)
     picam2.stop()
     print("[EXIT] Camera safely closed.", flush=True)
