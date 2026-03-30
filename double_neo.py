@@ -110,6 +110,7 @@ try:
                 f.writelines(subtitles)
                 
             print(f"【保存完了】 {mp4_file} が完成しました。待機モードに戻ります。\n")
+            break
 
         time.sleep(0.05) # CPUを休ませる
 
