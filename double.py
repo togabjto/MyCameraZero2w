@@ -21,9 +21,9 @@ width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 fps = 10.0 # フレームレート
 
-# 録画用ファイルの設定 (test_record.mp4 として10秒間保存)
-fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter('test_record.mp4', fourcc, fps, (width, height))
+# H.264やMP4ではなく、ラズパイと相性の良い XVID と .avi に変更！
+fourcc = cv2.VideoWriter_fourcc(*'XVID')
+out = cv2.VideoWriter('test_record.avi', fourcc, fps, (width, height))
 
 print("録画を開始します（10秒間）...")
 
