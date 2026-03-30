@@ -47,14 +47,13 @@ picam2.start()
 
 print("\n" + "="*40, flush=True)
 print(" SYSTEM READY: Surveillance Camera", flush=True)
-print(f" SAVE DIR: {os.path.abspath(MOVIE_DIR)}/", flush=True)
 print("="*40 + "\n", flush=True)
 time.sleep(2)
 
 is_recording = False
 record_until = 0
 current_file_num = 0
-temp_filename = "" # 一時ファイル名
+temp_filename = ""
 
 print("[WAITING] Monitoring for motion...", flush=True)
 
@@ -62,12 +61,16 @@ try:
     while True:
         current_time = time.time()
 
-        # ==========================================
-        # 4. Motion Detection (絶対に立ち止まらない)
-        # ==========================================
+        # ---------- デバッグログ追加 ----------
+        # print("[DEBUG] Getting frame...", flush=True) # ログが多すぎる場合は消してください
+        
+        # 映像の取得（フリーズするなら絶対ココ！）
         lores_yuv = picam2.capture_array("lores")
         gray_frame = np.ascontiguousarray(lores_yuv[:240, :320])
         
+        # print("[DEBUG] Frame OK", flush=True)
+        # --------------------------------------
+
         is_moving = lib.detect_motion(gray_frame, 320, 240)
 
         if is_moving == 1:
@@ -76,34 +79,42 @@ try:
             if not is_recording:
                 current_file_num = get_next_file_number()
                 filename_base = f"{current_file_num:04d}" 
-                
-                # 🌟 今回は一時ファイル名も毎回変える（裏方と処理がぶつからないように）
                 temp_filename = f"temp_{filename_base}.h264"
                 
                 print(f"\n[DETECTED] Motion! Starting record: {filename_base}.mp4", flush=True)
+                print("[DEBUG] Starting encoder...", flush=True)
                 
+                # エンコーダを毎回新鮮な状態で作成
                 encoder = H264Encoder(bitrate=2000000)
                 output = FileOutput(temp_filename)
                 picam2.start_recording(encoder, output)
                 is_recording = True
+                
+                print("[DEBUG] Record is running.", flush=True)
 
         # ==========================================
-        # 5. Stop Recording & Convert in Background
+        # 4. Stop Recording & Force Camera Reset
         # ==========================================
         if is_recording and current_time >= record_until:
+            print(f"[STOP] No motion for 10s. Stopping record...", flush=True)
             picam2.stop_recording()
             is_recording = False
             
-            final_mp4 = os.path.join(MOVIE_DIR, f"{current_file_num:04d}.mp4")
-            print(f"[STOP] No motion for 10s. Converting in BACKGROUND...", flush=True)
+            # 🌟【究極の対策】カメラのパニックを治すため、一度完全にシャットダウンして再起動する
+            print("[DEBUG] Resetting camera pipeline to prevent freeze...", flush=True)
+            picam2.stop()      # カメラのメモリを完全解放！
+            time.sleep(0.5)    # 息継ぎ
+            picam2.start()     # 綺麗な状態で再起動！
+            print("[DEBUG] Camera reset COMPLETE.", flush=True)
             
-            # 🌟【最重要】subprocess.Popen を使い、裏方に変換と削除を丸投げする！
-            # これによりPythonは1ミリ秒も待たずに次の監視(capture_array)に戻れる
+            # 裏方でMP4に変換
+            final_mp4 = os.path.join(MOVIE_DIR, f"{current_file_num:04d}.mp4")
+            print(f"[CONVERT] Converting to MP4 in background...", flush=True)
             cmd = f"ffmpeg -y -framerate 30 -i {temp_filename} -c copy {final_mp4} && rm {temp_filename}"
             subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
             print("-" * 40, flush=True)
-            print("[WAITING] Resuming motion detection instantly...", flush=True)
+            print("[WAITING] Resuming motion detection...", flush=True)
             print("-" * 40 + "\n", flush=True)
 
         time.sleep(0.05) 
@@ -113,8 +124,5 @@ except KeyboardInterrupt:
 finally:
     if is_recording:
         picam2.stop_recording()
-    # 終了時、もしゴミが残っていたら消す
-    if temp_filename and os.path.exists(temp_filename):
-        os.remove(temp_filename)
     picam2.stop()
     print("[EXIT] Camera safely closed.", flush=True)
