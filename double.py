@@ -3,6 +3,7 @@ import time
 import ctypes
 import numpy as np
 from numpy.ctypeslib import ndpointer
+from picamera2 import Picamera2
 
 # ==========================================
 # 1. C言語ライブラリの読み込み
@@ -12,24 +13,26 @@ lib.detect_motion.argtypes = [ndpointer(ctypes.c_uint8, flags="C_CONTIGUOUS"), c
 lib.detect_motion.restype = ctypes.c_int
 
 # ==========================================
-# 2. カメラの準備
+# 2. Picamera2の準備（OpenCVの代わりにカメラを叩く！）
 # ==========================================
-cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+picam2 = Picamera2()
+# main=録画用(VGAサイズで軽く), lores=動体検知用(さらに軽く)
+config = picam2.create_video_configuration(
+    main={"size": (640, 480), "format": "RGB888"},
+    lores={"size": (320, 240), "format": "YUV420"}
+)
+picam2.configure(config)
+picam2.start()
 
-# 負荷を抑えるため VGA(640x480) 15fps に設定
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-cap.set(cv2.CAP_PROP_FPS, 15)
+print("カメラの露出調整中...")
+time.sleep(2)
 
-if not cap.isOpened():
-    print("【エラー】カメラが開けません。'sudo pkill python3' を試してください。")
-    exit()
-
-width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+# ==========================================
+# 3. OpenCVの録画準備（絶対に失敗しない MJPG の AVI）
+# ==========================================
+width = 640
+height = 480
 fps = 15.0
-
-# XVIDを捨てて、絶対に失敗しない MJPG に変更！
 fourcc = cv2.VideoWriter_fourcc(*'MJPG')
 out = cv2.VideoWriter('test_record.avi', fourcc, fps, (width, height))
 
@@ -37,36 +40,42 @@ print(f"録画を開始します... (AVI形式, {width}x{height})")
 start_time = time.time()
 
 # ==========================================
-# 3. メインループ
+# 4. メインループ
 # ==========================================
 while (time.time() - start_time) < 10.0:
     current_sec = time.time() - start_time
     
-    ret, frame = cap.read()
-    if not ret:
-        continue
+    # 🌟 Picamera2から確実に綺麗な映像をもらう！
+    frame_rgb = picam2.capture_array("main")
+    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR) # OpenCV用に色を並べ替え
 
-    # C言語で動体検知するための下準備（白黒＆縮小）
-    small_frame = cv2.resize(frame, (320, 240))
-    gray_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+    # 🌟 動体検知用の白黒映像もPicamera2からもらう
+    lores_yuv = picam2.capture_array("lores")
+    gray_frame = lores_yuv[:240, :320].copy()
+    
+    # C言語でエラーが出ないように配列を整える（念のため）
+    gray_frame_c = np.ascontiguousarray(gray_frame)
 
-    # C言語ライブラリに投げて判定
-    is_moving = lib.detect_motion(gray_frame, 320, 240)
+    # C言語ライブラリで動体検知！
+    is_moving = lib.detect_motion(gray_frame_c, 320, 240)
 
     if is_moving == 1:
-        # ① 映像そのものに赤い文字を直接書き込む
-        cv2.putText(frame, "Motion Detected!", (20, height - 30), 
+        # 映像そのものに赤い文字を直接書き込む
+        cv2.putText(frame_bgr, "Motion Detected!", (20, height - 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
         
-        # ② ターミナルにログを表示する（復活！）
+        # ターミナルにログを表示する
         print(f"[{current_sec:.1f}秒] 動体検知しました！")
 
-    # 文字入り(または文字なし)の映像をAVIに書き込む
-    out.write(frame)
+    # 文字入りの映像をAVI(MJPG)に書き込む
+    out.write(frame_bgr)
+    
+    # 処理が早すぎないように少し待つ
+    time.sleep(1.0 / fps)
 
 # ==========================================
-# 4. お片付け
+# 5. お片付け
 # ==========================================
-cap.release()
+picam2.stop()
 out.release()
 print("録画完了！ test_record.avi を保存しました。")
