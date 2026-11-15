@@ -12,6 +12,14 @@ static int prev_size = 0;
 static int pixel_threshold = 30;       // 画素の変化量がこれを超えたら「変化した画素」とみなす
 static double change_ratio = 0.03;     // 変化した画素が画面全体のこの割合を超えたら「動き」とみなす
 
+// 直近の detect_motion で計算した「変化した画素の割合」（0〜1）。メーター表示用。
+static double last_ratio = 0.0;
+
+double get_last_ratio(void) { return last_ratio; }
+// 現在のしきい値（メーターに、しきい値の線を引くため）
+double get_change_ratio(void) { return change_ratio; }
+int get_pixel_threshold(void) { return pixel_threshold; }
+
 // しきい値を設定する。不正な値なら -1 を返し、設定は変更しない。
 //   pixel: 0〜255 / ratio: 0 より大きく 1 以下
 int set_motion_params(int pixel, double ratio) {
@@ -35,6 +43,8 @@ void reset_motion(void) {
 // width, height: 画像の幅と高さ
 // 戻り値: 1 = 動きあり, 0 = 動きなし（初回・サイズ変更直後を含む）, -1 = 引数不正またはメモリ確保に失敗
 int detect_motion(unsigned char* current_frame, int width, int height) {
+    last_ratio = 0.0; // 比較できなかった場合（初回・サイズ変更直後・エラー）は 0 にしておく
+
     // 引数の確認
     if (current_frame == NULL || width <= 0 || height <= 0) {
         return -1;
@@ -70,6 +80,8 @@ int detect_motion(unsigned char* current_frame, int width, int height) {
             changed_pixels++;
         }
     }
+
+    last_ratio = (double)changed_pixels / size; // メーター表示用に、変化した画素の割合を残す
 
     // 現在のフレームを次回の比較用に上書き保存
     memcpy(prev_frame, current_frame, size);

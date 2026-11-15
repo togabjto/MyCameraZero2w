@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Condition, Thread
@@ -62,16 +63,23 @@ class LiveView:
         self._frame_id = 0
         self._frame_time = 0.0
         self._recording = False
+        self._ratio = 0.0       # 直近のフレームで「変化した画素」が占める割合（0〜1）。メーター表示用
+        self._recent = deque()  # 直近 1 秒の (時刻, 割合)。短い spike を、取得の間隔で見逃さないため
+        self.thresholds = {}    # しきい値（pixel_threshold, change_ratio）。メーターの線を引くため、呼び出し側が設定する
         self._server = None
 
     # ---- 監視ループから呼ぶ ----
-    def update(self, gray_frame, recording: bool) -> None:
-        """最新の白黒フレーム（2 次元の numpy 配列）と、録画中かどうかを渡す。"""
+    def update(self, gray_frame, recording: bool, ratio: float = 0.0) -> None:
+        """最新の白黒フレーム（2 次元の numpy 配列）、録画中かどうか、変化した画素の割合を渡す。"""
         with self._cond:
             self._frame = gray_frame  # 参照だけ保持する（変換は閲覧中の接続側で行う）
             self._frame_id += 1
             self._frame_time = time.monotonic()
             self._recording = recording
+            self._ratio = ratio
+            self._recent.append((self._frame_time, ratio))
+            while self._recent and self._frame_time - self._recent[0][0] > 1.0:
+                self._recent.popleft()
             self._cond.notify_all()
 
     def start(self) -> None:
@@ -99,8 +107,12 @@ class LiveView:
                     self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
                 elif self.path == "/status":
                     with view._cond:
+                        now = time.monotonic()
+                        peak = max((r for t, r in view._recent if now - t <= 1.0), default=0.0)
                         body = {"recording": view._recording,
-                                "frame_age_s": round(time.monotonic() - view._frame_time, 2) if view._frame_id else None}
+                                "frame_age_s": round(now - view._frame_time, 2) if view._frame_id else None,
+                                "ratio": round(view._ratio, 5), "ratio_peak": round(peak, 5),
+                                "thresholds": view.thresholds}
                     self._send(json.dumps(body).encode(), "application/json")
                 elif self.path == "/stream.mjpg":
                     self._stream()

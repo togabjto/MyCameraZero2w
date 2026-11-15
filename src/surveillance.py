@@ -47,6 +47,7 @@ lib.detect_motion.argtypes = [ndpointer(ctypes.c_uint8, flags="C_CONTIGUOUS"), c
 lib.detect_motion.restype = ctypes.c_int
 lib.set_motion_params.argtypes = [ctypes.c_int, ctypes.c_double]
 lib.set_motion_params.restype = ctypes.c_int
+lib.get_last_ratio.restype = ctypes.c_double   # 直近のフレームで、変化した画素が占める割合（メーター表示用）
 
 # 検知のしきい値（既定値は従来と同じ。感度を変えて試すときに指定する）
 parser = argparse.ArgumentParser(description="動体検知つき監視カメラ")
@@ -76,6 +77,7 @@ if args.live_port:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 起動のしかたに依存せず、同じ場所の live_view を読む
     from live_view import LiveView
     live = LiveView(args.live_host, args.live_port, args.live_user, args.live_password)
+    live.thresholds = {"pixel_threshold": args.pixel_threshold, "change_ratio": args.change_ratio}
 
 # ==========================================
 # 3. Camera Setup
@@ -130,10 +132,10 @@ try:
         # print("[DEBUG] Frame OK", flush=True)
         # --------------------------------------
 
-        if live:
-            live.update(gray_frame, is_recording)
-
         is_moving = lib.detect_motion(gray_frame, 320, 240)
+
+        if live:
+            live.update(gray_frame, is_recording, lib.get_last_ratio())
 
         if is_moving == 1:
             record_until = current_time + 10.0
