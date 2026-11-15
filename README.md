@@ -98,10 +98,23 @@ python3 src/surveillance.py      # 止めるときは Ctrl+C
   `TOOLS_PASSWORD=xxxx python3 src/surveillance.py --live-port 8002`
 - 詳しい手順とつまずいた点: [docs/setup.md](docs/setup.md)
 
-## デバッグ・計測用のツール
+### 設置して放置する場合（Web アプリ）
+
+SSH で Web アプリを起動しておけば、あとはブラウザから、監視の開始・停止、ライブ映像、録画の再生ができます。
+
+```
+tmux
+TOOLS_PASSWORD=好きな文字列 python3 src/webapp.py --autostart
+# ブラウザで http://<Pi の IP>:8000/ （ユーザー名: admin）
+```
+
+使い方と注意（パスワード必須・LAN 内のみ、録画の自動削除なし）は [docs/webapp.md](docs/webapp.md) を参照してください。
+
+## Web アプリとツール
 
 | ツール | 内容 |
 |---|---|
+| `src/webapp.py` | 監視の開始・停止、ライブ映像、録画の再生をブラウザで行う常駐アプリ |
 | `tools/viewer.py` | 録画をブラウザで再生する（再生・一時停止・10 秒とばし・倍速） |
 | `tools/preview.py` | カメラの画角をブラウザで確認する（監視と同時には使えない） |
 | `tools/benchmark.py` | 検知ループの fps・CPU・メモリを測って CSV に保存する |
