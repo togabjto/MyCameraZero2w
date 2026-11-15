@@ -35,6 +35,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
 from _auth import add_common_args, require_password  # noqa: E402
 import viewer  # noqa: E402  (tools/viewer.py: 録画の一覧・再生)
+sys.path.insert(0, HERE)
+import orientation  # noqa: E402  (src/orientation.py: カメラの向き)
 
 DASHBOARD = """<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
@@ -56,6 +58,13 @@ pre{background:#111;color:#ddd;padding:.6rem;overflow:auto;max-height:18rem;font
 <p><button id="btnStart">監視を開始</button><button id="btnStop">監視を停止</button>
  <a href="/recordings">録画一覧</a></p>
 <p id="msg"></p>
+<details id="setBox"><summary>カメラの向き</summary>
+ <p>向き: <select id="rot"><option value="0">0°（そのまま）</option><option value="180">180°（上下逆さま）</option></select>
+ <label><input type="checkbox" id="hf"> 左右反転</label>
+ <label><input type="checkbox" id="vf"> 上下反転</label></p>
+ <p><button id="btnSave">保存して再起動</button><button id="btnSaveOnly">保存のみ（次回の開始から）</button></p>
+ <small>ライブ映像を見ながら直す。変更は、カメラを再起動すると反映される（録画中なら、保存してから再起動する）。</small>
+</details>
 <div id="liveBox"><img id="live" alt="live"><small>ライブ映像（320x240・白黒。検知用の映像）</small></div>
 <p id="info"></p>
 <p id="diskWarn" class="warn" style="display:none"></p>
@@ -73,6 +82,18 @@ async function post(path){
 }
 $('btnStart').onclick=()=>post('/api/start');
 $('btnStop').onclick=()=>{ if(confirm('監視を停止しますか？（録画中なら、保存してから止まります）')) post('/api/stop'); };
+async function saveSettings(restart){
+  $('msg').textContent='...';
+  const body={rotation:parseInt($('rot').value,10),hflip:$('hf').checked,vflip:$('vf').checked,restart:restart};
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'X-Requested-With':'fetch','Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json(); $('msg').textContent=j.message||'';
+  }catch(e){$('msg').textContent='通信に失敗しました'}
+  refresh();
+}
+$('btnSave').onclick=()=>saveSettings(true);
+$('btnSaveOnly').onclick=()=>saveSettings(false);
+let setInit=false;   // 設定欄は、最初に 1 回だけ現在の値を入れる（編集中に上書きしない）
 function fmt(s){s=Math.floor(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+'時間':'')+m+'分'+(s%60)+'秒'}
 async function refresh(){
   let j;
@@ -82,6 +103,8 @@ async function refresh(){
   $('rec').textContent=j.recording?'● 録画中':'';
   $('uptime').textContent=j.state==='running'?('（稼働 '+fmt(j.uptime_s)+'）'):'';
   $('btnStart').disabled=j.state!=='stopped'; $('btnStop').disabled=j.state!=='running';
+  if(!setInit&&j.settings){$('rot').value=String(j.settings.rotation);$('hf').checked=j.settings.hflip;$('vf').checked=j.settings.vflip;setInit=true}
+  $('btnSave').disabled=j.state==='stopping';
   const on=j.state==='running';
   if(on&&!liveOn){$('live').src='/live.mjpg?'+Date.now();liveOn=true}
   if(!on&&liveOn){$('live').removeAttribute('src');liveOn=false}
@@ -100,6 +123,45 @@ async function logRefresh(){
 refresh(); setInterval(refresh,2000); setInterval(logRefresh,3000);
 $('logBox').addEventListener('toggle',logRefresh);
 </script></body></html>"""
+
+
+class Settings:
+    """カメラの向きの設定。workdir/settings.json に保存し、Web アプリを再起動しても残す。"""
+
+    def __init__(self, path, defaults):
+        self.path = path
+        self.lock = threading.Lock()
+        self.values = self.validate(defaults)
+        try:
+            with open(path, encoding="utf-8") as f:
+                self.values = self.validate(json.load(f))
+        except (OSError, ValueError):
+            pass   # ファイルがない・壊れている場合は、既定値のまま
+
+    @staticmethod
+    def validate(d):
+        """正しい設定だけを通す。不正なら ValueError。"""
+        if not isinstance(d, dict):
+            raise ValueError("設定の形式が正しくありません。")
+        rotation, hflip, vflip = d.get("rotation", 0), d.get("hflip", False), d.get("vflip", False)
+        if isinstance(rotation, bool) or rotation not in orientation.ROTATIONS:
+            raise ValueError("rotation は 0 か 180 です。")
+        if not isinstance(hflip, bool) or not isinstance(vflip, bool):
+            raise ValueError("hflip と vflip は true / false です。")
+        return {"rotation": int(rotation), "hflip": hflip, "vflip": vflip}
+
+    def get(self):
+        with self.lock:
+            return dict(self.values)
+
+    def set(self, d):
+        values = self.validate(d)
+        with self.lock:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(values, f)
+            os.replace(tmp, self.path)   # 書き込み途中で止まっても、壊れたファイルを残さない
+            self.values = values
 
 
 class Manager:
@@ -121,12 +183,13 @@ class Manager:
         with self.lock:
             if self.state != "stopped":
                 return False, "すでに起動中です。"
+            cmd = self.cmd() if callable(self.cmd) else self.cmd   # 起動のたびに、最新の設定でコマンドを作る
             log = open(self.log_path, "ab")
             log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 監視を開始 =====\n".encode())
             log.flush()
             try:
                 # start_new_session: 端末の Ctrl+C が、子に直接届かないようにする（停止はこのアプリが行う）
-                self.proc = subprocess.Popen(self.cmd, cwd=self.workdir, env=self.env, stdout=log,
+                self.proc = subprocess.Popen(cmd, cwd=self.workdir, env=self.env, stdout=log,
                                              stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as e:
                 log.close()
@@ -164,6 +227,27 @@ class Manager:
         except ProcessLookupError:
             pass
 
+    def restart(self):
+        """動いていれば、止めてから起動し直す。止まっていれば、起動する。"""
+        with self.lock:
+            state = self.state
+        if state == "stopped":
+            return self.start()
+        if state == "stopping":
+            return False, "停止処理中です。止まってから、もう一度操作してください。"
+        self.stop()
+        threading.Thread(target=self._start_after_stop, daemon=True).start()
+        return True, "再起動しています（録画中なら、保存してから再起動します）。"
+
+    def _start_after_stop(self):
+        deadline = time.monotonic() + self.STOP_WAIT_SIGINT + self.STOP_WAIT_SIGTERM + 5
+        while time.monotonic() < deadline:
+            with self.lock:
+                if self.state == "stopped":
+                    break
+            time.sleep(0.2)
+        self.start()
+
     def stop_and_wait(self):
         """このアプリの終了時に、子プロセスも止める。"""
         with self.lock:
@@ -194,6 +278,7 @@ class Handler(viewer.Handler):
     """viewer.Handler（録画の一覧・再生）に、ダッシュボードと操作の API を足したもの。"""
     server_version = "CameraApp"
     manager: Manager = None
+    settings: Settings = None
     live_port = 0
     workdir = "."
 
@@ -253,7 +338,7 @@ class Handler(viewer.Handler):
         except OSError:
             names = []
         du = shutil.disk_usage(self.workdir)
-        s.update(recording=recording, recordings=len(names),
+        s.update(recording=recording, recordings=len(names), settings=self.settings.get(),
                  disk={"free_gb": round(du.free / 1e9, 1), "total_gb": round(du.total / 1e9, 1),
                        "used_pct": round(du.used / du.total * 100, 1)})
         return s
@@ -308,6 +393,26 @@ class Handler(viewer.Handler):
         origin = self.headers.get("Origin")
         return not origin or urlparse(origin).netloc == self.headers.get("Host")
 
+    def _save_settings(self):
+        """向きの設定を保存する。(ok, メッセージ, HTTP ステータス) を返す。restart が true なら、反映のため再起動する。"""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 2048:
+            return False, "リクエストの大きさが正しくありません。", HTTPStatus.BAD_REQUEST
+        try:
+            body = json.loads(self.rfile.read(n))
+            new = Settings.validate(body)
+        except ValueError as e:
+            return False, f"設定が正しくありません: {e}", HTTPStatus.BAD_REQUEST
+        self.settings.set(new)
+        if body.get("restart") is True:
+            ok, msg = self.manager.restart()
+            return ok, "保存しました。" + msg, (HTTPStatus.OK if ok else HTTPStatus.CONFLICT)
+        running = self.manager.snapshot()["state"] != "stopped"
+        return True, "保存しました。" + ("次にカメラを起動したときから反映されます。" if running else ""), HTTPStatus.OK
+
     def do_POST(self):
         if not self._authorized():
             return
@@ -318,22 +423,29 @@ class Handler(viewer.Handler):
             ok, msg = self.manager.start()
         elif path == "/api/stop":
             ok, msg = self.manager.stop()
+        elif path == "/api/settings":
+            ok, msg, status = self._save_settings()
+            return self._send_json({"ok": ok, "message": msg}, status)
         else:
             return self._send_json({"ok": False, "message": "見つかりません。"}, HTTPStatus.NOT_FOUND)
         self._send_json({"ok": ok, "message": msg}, HTTPStatus.OK if ok else HTTPStatus.CONFLICT)
 
 
-def build_command(args):
+def build_command(args, settings=None):
+    """子プロセス（監視）の起動コマンド。向きは、保存された設定（なければ起動時の指定）を使う。"""
+    s = settings or {"rotation": args.rotation, "hflip": args.hflip, "vflip": args.vflip}
+    direction = ["--rotation", str(s["rotation"])] + (["--hflip"] if s["hflip"] else []) + (["--vflip"] if s["vflip"] else [])
     if args.child_cmd:   # テスト用: 監視の代わりに別のコマンドを動かす
-        return shlex.split(args.child_cmd)
+        return shlex.split(args.child_cmd) + direction
     return [sys.executable, "-u", os.path.join(HERE, "surveillance.py"),
             "--live-port", str(args.live_port), "--live-host", "127.0.0.1", "--live-user", args.user,
-            "--pixel-threshold", str(args.pixel_threshold), "--change-ratio", str(args.change_ratio)]
+            "--pixel-threshold", str(args.pixel_threshold), "--change-ratio", str(args.change_ratio)] + direction
 
 
 def main():
     parser = argparse.ArgumentParser(description="監視カメラの Web アプリ（開始・停止・ライブ映像・録画の再生）")
     add_common_args(parser)
+    orientation.add_arguments(parser)   # 向きの初期値（画面で保存した設定があれば、そちらを優先する）
     parser.add_argument("--workdir", default=".",
                         help="録画（movie/）とログ（logs/）の場所。既定: 今いるフォルダ")
     parser.add_argument("--autostart", action="store_true", help="このアプリの起動と同時に、監視を開始する")
@@ -350,9 +462,12 @@ def main():
     os.makedirs(movie_dir, exist_ok=True)
 
     env = dict(os.environ, TOOLS_PASSWORD=args.password, PYTHONUNBUFFERED="1")   # パスワードは引数ではなく環境変数で渡す
-    manager = Manager(build_command(args), workdir, env, os.path.join(workdir, "logs", "surveillance.log"))
+    settings = Settings(os.path.join(workdir, "settings.json"),
+                        {"rotation": args.rotation, "hflip": args.hflip, "vflip": args.vflip})
+    manager = Manager(lambda: build_command(args, settings.get()), workdir, env,
+                      os.path.join(workdir, "logs", "surveillance.log"))
 
-    Handler.manager, Handler.live_port, Handler.workdir = manager, args.live_port, workdir
+    Handler.manager, Handler.settings, Handler.live_port, Handler.workdir = manager, settings, args.live_port, workdir
     Handler.movie_dir, Handler.user, Handler.password = movie_dir, args.user, args.password
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
