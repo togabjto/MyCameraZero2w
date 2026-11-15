@@ -37,6 +37,7 @@ from _auth import add_common_args, require_password  # noqa: E402
 import viewer  # noqa: E402  (tools/viewer.py: 録画の一覧・再生)
 sys.path.insert(0, HERE)
 import orientation  # noqa: E402  (src/orientation.py: カメラの向き)
+from live_view import LiveView  # noqa: E402  (src/live_view.py: 自動調整の指示の検証に使う)
 
 DASHBOARD = """<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
@@ -85,6 +86,16 @@ pre{background:#111;color:#ddd;padding:.6rem;overflow:auto;max-height:18rem;font
   <small>前のフレームとの明るさの差が、これを超えた画素を「変化した画素」と数える（小さいほど敏感）</small></p>
  <p>変化した画素の割合: <input type="range" id="crR" min="0.1" max="20" step="0.1"> <b id="crV">-</b><br>
   <small>変化した画素が、画面のこの割合を超えたら「動き」とみなす（小さいほど敏感）</small></p>
+ <p><button id="btnCal">自動調整（静止状態を測る）</button>
+  測る時間: <select id="calSec"><option value="10">10 秒</option><option value="20" selected>20 秒</option><option value="40">40 秒</option></select>
+  <button id="btnCalCancel" style="display:none">中止</button><br>
+  <small>カメラの前に誰もいない・何も動かない状態で押す。ノイズに反応しない、しきい値の目安を出す。</small></p>
+ <div id="calBox" style="display:none">
+  <p id="calText"></p>
+  <ul id="calList"></ul>
+  <p id="calApplyBox" style="display:none"><button id="btnCalApply">この値を使う</button>
+   <small>目安です。使ったあと、メーターで、静止時と動いたときの両方を確認してください。</small></p>
+ </div>
  <p><button id="btnThDefault">既定に戻す（30 / 3.0%）</button> <span id="thMsg"></span><br>
   <small>動かすと、すぐに反映して保存する（カメラの再起動は不要）。メーターの線で、効果を見ながら調整する。</small></p>
 </details>
@@ -126,6 +137,45 @@ async function sendThresholds(){
 function thChanged(){ thLabels(); clearTimeout(thTimer); thTimer=setTimeout(sendThresholds,400); }
 $('pxR').oninput=thChanged; $('crR').oninput=thChanged;
 $('btnThDefault').onclick=()=>{ $('pxR').value=30; $('crR').value=3; thChanged(); };
+// ---- 自動調整（静止状態を測って、しきい値の目安を出す） ----
+let calRec=null, isRunning=false;
+async function calPost(body){
+  $('thMsg').textContent='...';
+  try{
+    const r=await fetch('/api/calibrate',{method:'POST',headers:{'X-Requested-With':'fetch','Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json(); $('thMsg').textContent=j.message||'';
+  }catch(e){$('thMsg').textContent='通信に失敗しました'}
+  calPoll();
+}
+$('btnCal').onclick=()=>calPost({action:'start',seconds:parseInt($('calSec').value,10)});
+$('btnCalCancel').onclick=()=>calPost({action:'cancel'});
+$('btnCalApply').onclick=()=>{
+  if(!calRec) return;
+  const pct=Math.round(calRec.change_ratio*1000)/10;
+  $('crR').max=Math.max(parseFloat($('crR').max),pct);
+  $('pxR').value=calRec.pixel_threshold; $('crR').value=pct; thChanged();   // スライダーに反映し、すぐ保存・適用する
+};
+function showCal(c){
+  const box=$('calBox'), list=$('calList');
+  $('btnCal').disabled=c.state==='running'; $('btnCalCancel').style.display=c.state==='running'?'inline':'none';
+  $('calApplyBox').style.display='none'; calRec=null;
+  if(c.state==='running'){
+    box.style.display='block'; list.innerHTML='';
+    $('calText').textContent='測定中… '+c.elapsed+' / '+c.seconds+' 秒（'+c.frames+' フレーム）。カメラの前から離れて、動かないでください。';
+  }else if(c.state==='done'||c.state==='failed'){
+    const r=c.result; box.style.display='block';
+    list.innerHTML=''; for(const t of r.table){ const li=document.createElement('li'); li.textContent='画素差 '+t.pixel+' のとき、静止中に最大 '+(t.max_ratio*100).toFixed(2)+'% が変化とみなされた'; list.appendChild(li); }
+    if(r.ok){ calRec=r;
+      $('calText').textContent='目安: 画素差 '+r.pixel_threshold+' ／ 割合 '+(r.change_ratio*100).toFixed(1)+'%（静止中の最大 '+(r.static_max_ratio*100).toFixed(2)+'%、'+r.frames+' フレームで測定）';
+      $('calApplyBox').style.display='block';
+    }else{ $('calText').textContent=r.message; }
+  }else{ box.style.display='none'; }
+}
+async function calPoll(){
+  if(!isRunning){ showCal({state:'idle'}); return; }
+  try{ showCal(await (await fetch('/api/calibration')).json()); }catch(e){}
+}
+setInterval(calPoll,1000);
 $('btnSave').onclick=()=>saveSettings(true);
 $('btnSaveOnly').onclick=()=>saveSettings(false);
 let setInit=false;   // 設定欄は、最初に 1 回だけ現在の値を入れる（編集中に上書きしない）
@@ -145,7 +195,7 @@ async function refresh(){
     $('crR').max=Math.max(20,crPct);
     $('pxR').value=j.settings.pixel_threshold; $('crR').value=crPct; thLabels(); thInit=true;
   }
-  const on=j.state==='running';
+  const on=j.state==='running'; isRunning=on;
   if(on&&!liveOn){$('live').src='/live.mjpg?'+Date.now();liveOn=true}
   if(!on&&liveOn){$('live').removeAttribute('src');liveOn=false}
   $('liveBox').style.display=on?'block':'none';
@@ -400,6 +450,12 @@ class Handler(viewer.Handler):
         elif path == "/api/meter":
             if self._authorized():
                 self._send_json(self._meter())
+        elif path == "/api/calibration":
+            if self._authorized():
+                if self.manager.snapshot()["state"] != "running":
+                    self._send_json({"state": "unavailable"})
+                else:
+                    self._send_json(self._live_status().get("calibration") or {"state": "unavailable"})
         elif path == "/api/log":
             if self._authorized():
                 data = tail_lines(os.path.join(self.workdir, "logs", "surveillance.log")).encode("utf-8")
@@ -494,17 +550,37 @@ class Handler(viewer.Handler):
         origin = self.headers.get("Origin")
         return not origin or urlparse(origin).netloc == self.headers.get("Host")
 
-    def _push_params(self, pixel, ratio) -> bool:
-        """動いている監視（子プロセス）に、新しいしきい値を送る。カメラの再起動は要らない。"""
+    def _post_child(self, path, obj) -> bool:
+        """動いている監視（子プロセス）の窓口（127.0.0.1 限定）に、JSON を送る。成功なら True。"""
         try:
             conn = http.client.HTTPConnection("127.0.0.1", self.live_port, timeout=3)
-            conn.request("POST", "/params", body=json.dumps({"pixel_threshold": pixel, "change_ratio": ratio}),
+            conn.request("POST", path, body=json.dumps(obj),
                          headers=dict(self._upstream_headers(), **{"Content-Type": "application/json"}))
             ok = conn.getresponse().status == 200
             conn.close()
             return ok
         except (OSError, http.client.HTTPException):
             return False
+
+    def _push_params(self, pixel, ratio) -> bool:
+        """動いている監視に、新しいしきい値を送る。カメラの再起動は要らない。"""
+        return self._post_child("/params", {"pixel_threshold": pixel, "change_ratio": ratio})
+
+    def _calibrate(self):
+        """自動調整の開始・中止を、動いている監視に伝える。(ok, メッセージ, HTTP ステータス) を返す。"""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not 0 < n <= 1024:
+                raise ValueError("リクエストの大きさが正しくありません。")
+            body = json.loads(self.rfile.read(n))
+            cmd = LiveView.parse_calibration(body)
+        except ValueError as e:
+            return False, f"リクエストが正しくありません: {e}", HTTPStatus.BAD_REQUEST
+        if self.manager.snapshot()["state"] != "running":
+            return False, "監視が動いていません。自動調整は、監視の動作中に使います。", HTTPStatus.CONFLICT
+        if not self._post_child("/calibrate", {"action": cmd[0], **({"seconds": cmd[1]} if cmd[1] else {})}):
+            return False, "監視に指示を送れませんでした。", HTTPStatus.BAD_GATEWAY
+        return True, ("静止状態の測定を始めました。" if cmd[0] == "start" else "中止しました。"), HTTPStatus.OK
 
     def _save_settings(self):
         """設定（向き・しきい値）を保存する。(ok, メッセージ, HTTP ステータス) を返す。
@@ -559,6 +635,9 @@ class Handler(viewer.Handler):
             ok, msg = self.manager.stop()
         elif path == "/api/settings":
             ok, msg, status = self._save_settings()
+            return self._send_json({"ok": ok, "message": msg}, status)
+        elif path == "/api/calibrate":
+            ok, msg, status = self._calibrate()
             return self._send_json({"ok": ok, "message": msg}, status)
         else:
             return self._send_json({"ok": False, "message": "見つかりません。"}, HTTPStatus.NOT_FOUND)
