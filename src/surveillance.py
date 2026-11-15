@@ -132,6 +132,13 @@ try:
         # print("[DEBUG] Frame OK", flush=True)
         # --------------------------------------
 
+        # Web から変更されたしきい値は、ここ（監視ループの中）で適用する
+        if live:
+            pending = live.take_pending()
+            if pending is not None and lib.set_motion_params(pending[0], pending[1]) == 0:
+                live.thresholds = {"pixel_threshold": pending[0], "change_ratio": pending[1]}
+                print(f"[CONFIG] しきい値を変更: pixel_threshold={pending[0]} change_ratio={pending[1]}", flush=True)
+
         is_moving = lib.detect_motion(gray_frame, 320, 240)
 
         if live:

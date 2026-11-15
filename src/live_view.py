@@ -66,6 +66,7 @@ class LiveView:
         self._ratio = 0.0       # 直近のフレームで「変化した画素」が占める割合（0〜1）。メーター表示用
         self._recent = deque()  # 直近 1 秒の (時刻, 割合)。短い spike を、取得の間隔で見逃さないため
         self.thresholds = {}    # しきい値（pixel_threshold, change_ratio）。メーターの線を引くため、呼び出し側が設定する
+        self._pending = None    # 外から届いた、まだ適用していない新しいしきい値 (pixel, ratio)
         self._server = None
 
     # ---- 監視ループから呼ぶ ----
@@ -81,6 +82,25 @@ class LiveView:
             while self._recent and self._frame_time - self._recent[0][0] > 1.0:
                 self._recent.popleft()
             self._cond.notify_all()
+
+    def take_pending(self):
+        """外から届いた新しいしきい値 (pixel, ratio) を 1 回だけ返す（なければ None）。
+        C の変数を別スレッドから書き換えないよう、適用は監視ループ側で行う。"""
+        with self._cond:
+            pending, self._pending = self._pending, None
+            return pending
+
+    @staticmethod
+    def parse_params(body):
+        """しきい値の指定を検証して (pixel, ratio) を返す。不正なら ValueError。"""
+        if not isinstance(body, dict):
+            raise ValueError("形式が正しくありません。")
+        pixel, ratio = body.get("pixel_threshold"), body.get("change_ratio")
+        if isinstance(pixel, bool) or not isinstance(pixel, int) or not 0 <= pixel <= 255:
+            raise ValueError("pixel_threshold は 0〜255 の整数です。")
+        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 < ratio <= 1:
+            raise ValueError("change_ratio は 0 より大きく 1 以下の数です。")
+        return pixel, float(ratio)
 
     def start(self) -> None:
         view = self
@@ -119,8 +139,26 @@ class LiveView:
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
 
-            def _send(self, data: bytes, ctype: str):
-                self.send_response(HTTPStatus.OK)
+            def do_POST(self):
+                """しきい値の変更を受け取る（Web アプリからの中継用。127.0.0.1 のみ・認証あり）。"""
+                if not self._authorized():
+                    return
+                if self.path != "/params":
+                    return self.send_error(HTTPStatus.NOT_FOUND)
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                    if not 0 < n <= 1024:
+                        raise ValueError("リクエストの大きさが正しくありません。")
+                    params = view.parse_params(json.loads(self.rfile.read(n)))
+                except ValueError as e:
+                    return self._send(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False).encode(),
+                                      "application/json", HTTPStatus.BAD_REQUEST)
+                with view._cond:
+                    view._pending = params
+                self._send(b'{"ok": true}', "application/json")
+
+            def _send(self, data: bytes, ctype: str, status=HTTPStatus.OK):
+                self.send_response(status)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
