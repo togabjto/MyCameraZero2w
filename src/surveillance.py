@@ -27,6 +27,10 @@ def get_next_file_number():
                 max_num = num
     return max_num + 1
 
+# 起動時に 1 回だけファイルから初期化し、以後はメモリ上のカウンタで管理する。
+# （変換中の MP4 はまだ存在しないため、毎回ファイルを数えると番号が重複しうる）
+next_file_number = get_next_file_number()
+
 # ==========================================
 # 2. Load C Library
 # ==========================================
@@ -79,7 +83,8 @@ try:
             record_until = current_time + 10.0
 
             if not is_recording:
-                current_file_num = get_next_file_number()
+                current_file_num = next_file_number
+                next_file_number += 1
                 filename_base = f"{current_file_num:04d}" 
                 temp_filename = f"temp_{filename_base}.h264"
                 
