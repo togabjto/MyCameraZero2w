@@ -103,6 +103,8 @@ def _handle_sigterm(signum, frame):
 
 
 signal.signal(signal.SIGTERM, _handle_sigterm)
+# バックグラウンドで起動されると SIGINT が無視されていることがあるので、停止の信号を確実に受け取れるようにする
+signal.signal(signal.SIGINT, signal.default_int_handler)
 
 try:
     while True:

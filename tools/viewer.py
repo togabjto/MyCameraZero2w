@@ -38,7 +38,7 @@ button{{font-size:1rem;margin:.2rem;padding:.4rem .8rem}}
 li{{margin:.3rem 0}}
 </style></head><body>{body}</body></html>"""
 
-WATCH_BODY = """<p><a href="/">&larr; 一覧</a></p>
+WATCH_BODY = """<p><a href="/recordings">&larr; 録画一覧</a></p>
 <h2>{name}</h2>
 <video id="v" src="/video/{name}" controls autoplay playsinline></video>
 <p>
@@ -131,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = self.path.split("?", 1)[0]
-        if path == "/":
+        if path in ("/", "/recordings"):
             self._index()
         elif path.startswith("/watch/"):
             self._watch(path[len("/watch/"):])
