@@ -97,7 +97,7 @@ python3 tools/benchmark.py detect --duration 60 --pixel-threshold 20 --change-ra
 | 温度 | 計測後に 40.2℃（計測中の値ではない。計測中の制限の有無は、`get_throttled` の `0x0` で確認） |
 | 電源 | USB-C → micro-USB 変換コネクタ経由（Mac の充電器） |
 | `get_throttled` | 4 回とも `0x0`（電圧不足・温度制限なし） |
-| 画面の静止 | TODO: 未確認（CSV の `motion_count` の合計が 0 か確認する） |
+| 画面の静止 | 確認済み（`results/` の全 CSV で `motion_count` の合計が 0） |
 | 計測の回数 | 各構成 60 秒を 1 回だけ（ばらつきは未確認） |
 
 ### 2 系統に分けた効果（静止状態・60 秒）
