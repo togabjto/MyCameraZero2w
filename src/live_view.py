@@ -67,6 +67,8 @@ class LiveView:
         self._recent = deque()  # 直近 1 秒の (時刻, 割合)。短い spike を、取得の間隔で見逃さないため
         self.thresholds = {}    # しきい値（pixel_threshold, change_ratio）。メーターの線を引くため、呼び出し側が設定する
         self._pending = None    # 外から届いた、まだ適用していない新しいしきい値 (pixel, ratio)
+        self.calibration = {"state": "idle"}   # 自動調整の状態（calibration.CalibrationRunner が書く）
+        self._calib_cmd = None  # 外から届いた、まだ処理していない自動調整の指示 ("start", 秒数) / ("cancel", None)
         self._server = None
 
     # ---- 監視ループから呼ぶ ----
@@ -89,6 +91,25 @@ class LiveView:
         with self._cond:
             pending, self._pending = self._pending, None
             return pending
+
+    def take_calibration_command(self):
+        """外から届いた自動調整の指示を 1 回だけ返す（なければ None）。処理は、監視ループ側で行う。"""
+        with self._cond:
+            cmd, self._calib_cmd = self._calib_cmd, None
+            return cmd
+
+    @staticmethod
+    def parse_calibration(body):
+        """自動調整の指示を検証して ("start", 秒数) か ("cancel", None) を返す。不正なら ValueError。"""
+        if not isinstance(body, dict):
+            raise ValueError("形式が正しくありません。")
+        action = body.get("action")
+        if action == "cancel":
+            return ("cancel", None)
+        seconds = body.get("seconds", 20)
+        if action != "start" or isinstance(seconds, bool) or not isinstance(seconds, int) or not 5 <= seconds <= 120:
+            raise ValueError("action は start / cancel、seconds は 5〜120 の整数です。")
+        return ("start", seconds)
 
     @staticmethod
     def parse_params(body):
@@ -132,7 +153,7 @@ class LiveView:
                         body = {"recording": view._recording,
                                 "frame_age_s": round(now - view._frame_time, 2) if view._frame_id else None,
                                 "ratio": round(view._ratio, 5), "ratio_peak": round(peak, 5),
-                                "thresholds": view.thresholds}
+                                "thresholds": view.thresholds, "calibration": view.calibration}
                     self._send(json.dumps(body).encode(), "application/json")
                 elif self.path == "/stream.mjpg":
                     self._stream()
@@ -140,21 +161,25 @@ class LiveView:
                     self.send_error(HTTPStatus.NOT_FOUND)
 
             def do_POST(self):
-                """しきい値の変更を受け取る（Web アプリからの中継用。127.0.0.1 のみ・認証あり）。"""
+                """しきい値の変更・自動調整の指示を受け取る（Web アプリからの中継用。127.0.0.1 のみ・認証あり）。"""
                 if not self._authorized():
                     return
-                if self.path != "/params":
+                if self.path not in ("/params", "/calibrate"):
                     return self.send_error(HTTPStatus.NOT_FOUND)
                 try:
                     n = int(self.headers.get("Content-Length") or 0)
                     if not 0 < n <= 1024:
                         raise ValueError("リクエストの大きさが正しくありません。")
-                    params = view.parse_params(json.loads(self.rfile.read(n)))
+                    body = json.loads(self.rfile.read(n))
+                    value = view.parse_params(body) if self.path == "/params" else view.parse_calibration(body)
                 except ValueError as e:
                     return self._send(json.dumps({"ok": False, "message": str(e)}, ensure_ascii=False).encode(),
                                       "application/json", HTTPStatus.BAD_REQUEST)
                 with view._cond:
-                    view._pending = params
+                    if self.path == "/params":
+                        view._pending = value
+                    else:
+                        view._calib_cmd = value
                 self._send(b'{"ok": true}', "application/json")
 
             def _send(self, data: bytes, ctype: str, status=HTTPStatus.OK):

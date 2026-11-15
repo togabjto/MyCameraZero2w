@@ -14,6 +14,7 @@ from picamera2.outputs import FileOutput
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 起動のしかたに依存せず、同じ場所のモジュールを読む
 import orientation
+import calibration
 
 # ==========================================
 # 1. Setup Directory
@@ -48,6 +49,9 @@ lib.detect_motion.restype = ctypes.c_int
 lib.set_motion_params.argtypes = [ctypes.c_int, ctypes.c_double]
 lib.set_motion_params.restype = ctypes.c_int
 lib.get_last_ratio.restype = ctypes.c_double   # 直近のフレームで、変化した画素が占める割合（メーター表示用）
+lib.set_hist_enabled.argtypes = [ctypes.c_int]   # 自動調整用: 差の分布の集計の入り切り
+lib.get_diff_hist.argtypes = [ctypes.POINTER(ctypes.c_uint)]
+lib.get_diff_hist.restype = ctypes.c_int
 
 # 検知のしきい値（既定値は従来と同じ。感度を変えて試すときに指定する）
 parser = argparse.ArgumentParser(description="動体検知つき監視カメラ")
@@ -71,6 +75,7 @@ print(f"[CONFIG] {orientation.describe(args.rotation, args.hflip, args.vflip)}",
 transform = orientation.make_transform(args.rotation, args.hflip, args.vflip)
 
 live = None
+calib_runner = None
 if args.live_port:
     if not args.live_password:
         sys.exit("エラー: ライブ配信にはパスワードが必要です（--live-password か環境変数 TOOLS_PASSWORD）。")
@@ -78,6 +83,7 @@ if args.live_port:
     from live_view import LiveView
     live = LiveView(args.live_host, args.live_port, args.live_user, args.live_password)
     live.thresholds = {"pixel_threshold": args.pixel_threshold, "change_ratio": args.change_ratio}
+    calib_runner = calibration.CalibrationRunner(lib, live)   # Web からの「自動調整」の指示を、監視ループの中で処理する
 
 # ==========================================
 # 3. Camera Setup
@@ -139,7 +145,13 @@ try:
                 live.thresholds = {"pixel_threshold": pending[0], "change_ratio": pending[1]}
                 print(f"[CONFIG] しきい値を変更: pixel_threshold={pending[0]} change_ratio={pending[1]}", flush=True)
 
+        if calib_runner:
+            calib_runner.handle_command(live.take_calibration_command())
+
         is_moving = lib.detect_motion(gray_frame, 320, 240)
+
+        if calib_runner:
+            calib_runner.after_detect()   # 自動調整の測定中なら、このフレームの差の分布を集める
 
         if live:
             live.update(gray_frame, is_recording, lib.get_last_ratio())
