@@ -12,6 +12,9 @@ from picamera2 import Picamera2
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 起動のしかたに依存せず、同じ場所のモジュールを読む
+import orientation
+
 # ==========================================
 # 1. Setup Directory
 # ==========================================
@@ -58,10 +61,13 @@ parser.add_argument("--live-host", default="0.0.0.0", help="ライブ映像の�
 parser.add_argument("--live-user", default="admin", help="ライブ映像のユーザー名（既定: admin）")
 parser.add_argument("--live-password", default=os.environ.get("TOOLS_PASSWORD"),
                     help="ライブ映像のパスワード（環境変数 TOOLS_PASSWORD でも指定できる。配信するなら必須）")
+orientation.add_arguments(parser)   # --rotation / --hflip / --vflip
 args = parser.parse_args()
 if lib.set_motion_params(args.pixel_threshold, args.change_ratio) != 0:
     sys.exit("エラー: しきい値が範囲外です（--pixel-threshold は 0-255、--change-ratio は 0 より大きく 1 以下）")
 print(f"[CONFIG] pixel_threshold={args.pixel_threshold} change_ratio={args.change_ratio}", flush=True)
+print(f"[CONFIG] {orientation.describe(args.rotation, args.hflip, args.vflip)}", flush=True)
+transform = orientation.make_transform(args.rotation, args.hflip, args.vflip)
 
 live = None
 if args.live_port:
@@ -75,9 +81,12 @@ if args.live_port:
 # 3. Camera Setup
 # ==========================================
 picam2 = Picamera2()
+# 向きの指定があるときだけ transform を渡す（指定なしなら、従来と同じ設定）
+extra = {"transform": transform} if transform is not None else {}
 config = picam2.create_video_configuration(
-    main={"size": (1920, 1080), "format": "YUV420"}, 
-    lores={"size": (320, 240), "format": "YUV420"}   
+    main={"size": (1920, 1080), "format": "YUV420"},
+    lores={"size": (320, 240), "format": "YUV420"},
+    **extra
 )
 picam2.configure(config)
 picam2.start()

@@ -24,7 +24,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Condition
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 from _auth import add_common_args, is_authorized, require_password  # noqa: E402
+import orientation  # noqa: E402  (src/orientation.py: 向きの設定)
 
 PAGE = """<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
@@ -115,6 +117,7 @@ def main():
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=10, help="配信のフレームレート（既定: 10）")
     add_common_args(parser)
+    orientation.add_arguments(parser)   # --rotation / --hflip / --vflip（監視と同じ向きで確認できる）
     parser.set_defaults(port=8001)
     args = parser.parse_args()
     require_password(args)
@@ -134,9 +137,12 @@ def main():
 
     output = StreamingOutput()
     try:
+        transform = orientation.make_transform(args.rotation, args.hflip, args.vflip)
+        extra = {"transform": transform} if transform is not None else {}
         config = picam2.create_video_configuration(
             main={"size": (args.width, args.height)},
             controls={"FrameRate": args.fps},
+            **extra,
         )
         picam2.configure(config)
         picam2.start_recording(MJPEGEncoder(), FileOutput(output))
