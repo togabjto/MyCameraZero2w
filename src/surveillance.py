@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import signal
 import argparse
 import time
 import ctypes
@@ -95,6 +96,14 @@ temp_filename = ""
 
 print("[WAITING] Monitoring for motion...", flush=True)
 
+
+def _handle_sigterm(signum, frame):
+    # kill（SIGTERM）でも、Ctrl+C と同じ終了処理（録画の保存・カメラの解放）を行う
+    raise KeyboardInterrupt
+
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
+
 try:
     while True:
         current_time = time.time()
@@ -166,5 +175,14 @@ except KeyboardInterrupt:
 finally:
     if is_recording:
         picam2.stop_recording()
+        # 録画の途中で終了した場合も、一時ファイルを MP4 にしておく（そのままでは再生できない）
+        final_mp4 = os.path.join(MOVIE_DIR, f"{current_file_num:04d}.mp4")
+        print(f"[CONVERT] 録画中だったため、{final_mp4} に変換します...", flush=True)
+        result = subprocess.run(["ffmpeg", "-y", "-framerate", "30", "-i", temp_filename, "-c", "copy", final_mp4],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode == 0 and os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        elif result.returncode != 0:
+            print(f"[CONVERT] 変換に失敗しました。{temp_filename} を残します。", flush=True)
     picam2.stop()
     print("[EXIT] Camera safely closed.", flush=True)
