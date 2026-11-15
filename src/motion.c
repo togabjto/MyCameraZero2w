@@ -15,6 +15,26 @@ static double change_ratio = 0.03;     // 変化した画素が画面全体の�
 // 直近の detect_motion で計算した「変化した画素の割合」（0〜1）。メーター表示用。
 static double last_ratio = 0.0;
 
+// 自動調整用: 直近のフレームの「前フレームとの差」の分布（差が 0〜255 の画素が、それぞれ何個あるか）。
+// 有効にしている間だけ集計する（無効のときは、従来と同じ処理で、速度も変わらない）。
+static int hist_enabled = 0;
+static int hist_valid = 0;
+static unsigned int diff_hist[256];
+
+void set_hist_enabled(int on) {
+    hist_enabled = on ? 1 : 0;
+    hist_valid = 0;
+}
+
+// 直近のフレームの分布を out（256 個）にコピーし、画素の総数を返す。まだ集計していなければ 0。
+int get_diff_hist(unsigned int* out) {
+    if (!hist_valid || out == NULL) {
+        return 0;
+    }
+    memcpy(out, diff_hist, sizeof(diff_hist));
+    return prev_size;
+}
+
 double get_last_ratio(void) { return last_ratio; }
 // 現在のしきい値（メーターに、しきい値の線を引くため）
 double get_change_ratio(void) { return change_ratio; }
@@ -73,11 +93,23 @@ int detect_motion(unsigned char* current_frame, int width, int height) {
         return 0;
     }
 
-    // すべてのピクセルをチェックして、前回との差を計算
-    for (int i = 0; i < size; i++) {
-        int diff = abs(current_frame[i] - prev_frame[i]);
-        if (diff > threshold) {
-            changed_pixels++;
+    if (hist_enabled) {
+        // 自動調整中: 差の分布を集計し、しきい値を超えた画素数は、そこから数える（結果は、下の通常の処理と同じ）
+        memset(diff_hist, 0, sizeof(diff_hist));
+        for (int i = 0; i < size; i++) {
+            diff_hist[abs(current_frame[i] - prev_frame[i])]++;
+        }
+        for (int d = threshold + 1; d < 256; d++) {
+            changed_pixels += (int)diff_hist[d];
+        }
+        hist_valid = 1;
+    } else {
+        // すべてのピクセルをチェックして、前回との差を計算
+        for (int i = 0; i < size; i++) {
+            int diff = abs(current_frame[i] - prev_frame[i]);
+            if (diff > threshold) {
+                changed_pixels++;
+            }
         }
     }
 
