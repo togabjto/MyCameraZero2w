@@ -1,5 +1,7 @@
 import os
+import sys
 import glob
+import argparse
 import time
 import ctypes
 import numpy as np
@@ -39,6 +41,19 @@ LIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libmotion.s
 lib = ctypes.CDLL(LIB_PATH)
 lib.detect_motion.argtypes = [ndpointer(ctypes.c_uint8, flags="C_CONTIGUOUS"), ctypes.c_int, ctypes.c_int]
 lib.detect_motion.restype = ctypes.c_int
+lib.set_motion_params.argtypes = [ctypes.c_int, ctypes.c_double]
+lib.set_motion_params.restype = ctypes.c_int
+
+# 検知のしきい値（既定値は従来と同じ。感度を変えて試すときに指定する）
+parser = argparse.ArgumentParser(description="動体検知つき監視カメラ")
+parser.add_argument("--pixel-threshold", type=int, default=30,
+                    help="画素の変化量のしきい値 0-255（既定: 30）")
+parser.add_argument("--change-ratio", type=float, default=0.03,
+                    help="変化した画素の割合のしきい値 0〜1（既定: 0.03）")
+args = parser.parse_args()
+if lib.set_motion_params(args.pixel_threshold, args.change_ratio) != 0:
+    sys.exit("エラー: しきい値が範囲外です（--pixel-threshold は 0-255、--change-ratio は 0 より大きく 1 以下）")
+print(f"[CONFIG] pixel_threshold={args.pixel_threshold} change_ratio={args.change_ratio}", flush=True)
 
 # ==========================================
 # 3. Camera Setup

@@ -8,6 +8,28 @@ static unsigned char* prev_frame = NULL;
 // prev_frame を確保したときのサイズ（画像サイズが途中で変わった場合の検出用）
 static int prev_size = 0;
 
+// 検知のしきい値（set_motion_params で変更できる。既定値は従来と同じ）
+static int pixel_threshold = 30;       // 画素の変化量がこれを超えたら「変化した画素」とみなす
+static double change_ratio = 0.03;     // 変化した画素が画面全体のこの割合を超えたら「動き」とみなす
+
+// しきい値を設定する。不正な値なら -1 を返し、設定は変更しない。
+//   pixel: 0〜255 / ratio: 0 より大きく 1 以下
+int set_motion_params(int pixel, double ratio) {
+    if (pixel < 0 || pixel > 255 || !(ratio > 0.0 && ratio <= 1.0)) {
+        return -1;
+    }
+    pixel_threshold = pixel;
+    change_ratio = ratio;
+    return 0;
+}
+
+// 前回のフレームの記憶を捨てる（計測で条件を切り替えるときなどに使う）
+void reset_motion(void) {
+    free(prev_frame);
+    prev_frame = NULL;
+    prev_size = 0;
+}
+
 // Pythonから呼ばれる動体検知関数
 // current_frame: Pythonから渡される白黒画像の配列
 // width, height: 画像の幅と高さ
@@ -18,11 +40,11 @@ int detect_motion(unsigned char* current_frame, int width, int height) {
         return -1;
     }
     int size = width * height;
-    int threshold = 30; // ピクセルの色の変化を検知する閾値（感度）
+    int threshold = pixel_threshold; // ピクセルの色の変化を検知する閾値（感度）
     int changed_pixels = 0;
     
     // 画面全体の何％が変化したら「動いた」と判定するか（ここでは3%）
-    int motion_trigger_count = (int)(size * 0.03); 
+    int motion_trigger_count = (int)(size * change_ratio);
 
     // 初回実行時は比較対象がないので、現在のフレームを記憶して終了
     // 画像サイズが前回と違う場合は、比較できないので確保し直す（今回は比較せず記憶のみ）
