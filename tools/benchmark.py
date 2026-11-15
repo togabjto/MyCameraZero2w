@@ -131,7 +131,7 @@ def run_detect(args, mode):
                   f"rss={row['rss_kb']}kB detect={row['avg_detect_ms']}ms", flush=True)
             last, frames, motions, cap_s, det_s = now, 0, 0, 0.0, 0.0
 
-        start = last = pc()
+        start = last = last_frame_t = pc()
         frames = motions = 0
         cap_s = det_s = 0.0
         while pc() - start < args.duration:
@@ -145,13 +145,15 @@ def run_detect(args, mode):
             cap_s += t1 - t0
             det_s += t2 - t1
             motions += 1 if r == 1 else 0
+            last_frame_t = t2
             if t2 - last >= args.interval:
                 record_interval(t2)
             if args.sleep > 0:
                 time.sleep(args.sleep)
-        # 最後の中途半端な区間も、短すぎなければ記録する（短い区間は fps が不安定になるため捨てる）
-        if frames > 0 and pc() - last >= min(args.interval, 1.0) * 0.5:
-            record_interval(pc())
+        # 最後の中途半端な区間も、短すぎなければ記録する（短い区間は fps が不安定になるため捨てる）。
+        # 区間の終わりは「最後のフレームの時刻」にする（最後の待ちまで含めると、fps が低く出る）。
+        if frames > 0 and last_frame_t - last >= min(args.interval, 1.0) * 0.5:
+            record_interval(last_frame_t)
     except KeyboardInterrupt:
         print("\n[bench] 中断しました。ここまでの記録は保存されています。")
     finally:
