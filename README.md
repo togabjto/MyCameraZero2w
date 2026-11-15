@@ -94,6 +94,8 @@ python3 src/surveillance.py      # 止めるときは Ctrl+C
 
 - 録画は `movie/0001.mp4` のように、番号つきで保存されます。
 - 感度を変える: `python3 src/surveillance.py --pixel-threshold 40 --change-ratio 0.05`
+- 監視しながら、ブラウザでライブ映像を見る（320x240・白黒、パスワード必須、LAN 内のみ）:
+  `TOOLS_PASSWORD=xxxx python3 src/surveillance.py --live-port 8002`
 - 詳しい手順とつまずいた点: [docs/setup.md](docs/setup.md)
 
 ## デバッグ・計測用のツール
