@@ -40,6 +40,6 @@ TOOLS_PASSWORD=xxxx python3 tools/preview.py
 |---|---|
 | viewer の認証・Range・パス攻撃への耐性 | Mac 上で curl により確認済み |
 | preview の認証・MJPEG の配信形式 | Mac 上で偽フレームにより確認済み |
-| viewer をブラウザで再生・シーク・倍速 | TODO: 実機で未確認 |
+| viewer をブラウザで再生・10 秒とばし・倍速 | 実機（Pi Zero 2 W）と Mac のブラウザで確認済み（本人の報告） |
 | preview の実カメラ映像 | TODO: 実機で未確認 |
 | preview 使用中の CPU・メモリ | TODO: 未計測 |
