@@ -30,7 +30,9 @@ def get_next_file_number():
 # ==========================================
 # 2. Load C Library
 # ==========================================
-lib = ctypes.CDLL('./libmotion.so')
+# スクリプトと同じ場所から読み込む（実行時のカレントディレクトリに依存しない）
+LIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libmotion.so")
+lib = ctypes.CDLL(LIB_PATH)
 lib.detect_motion.argtypes = [ndpointer(ctypes.c_uint8, flags="C_CONTIGUOUS"), ctypes.c_int, ctypes.c_int]
 lib.detect_motion.restype = ctypes.c_int
 
