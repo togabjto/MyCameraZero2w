@@ -51,6 +51,12 @@ button{font-size:1rem;padding:.5rem 1.2rem;margin-right:.5rem}
 .rec{color:#c00;font-weight:bold}
 pre{background:#111;color:#ddd;padding:.6rem;overflow:auto;max-height:18rem;font-size:.8rem}
 .warn{background:#ffe9a8;padding:.4rem .8rem;border-radius:4px}
+#bar{position:relative;height:28px;background:#e6e6e6;border-radius:4px;overflow:hidden}
+#fill{height:100%;width:0;background:#2a9d4a;transition:width .15s}
+#fill.over{background:#d33}
+#thr{position:absolute;top:0;bottom:0;width:2px;background:#000}
+#hist{width:100%;height:90px;background:#fafafa;border:1px solid #ddd;display:block;margin-top:.4rem}
+#meterBox{margin:.8rem 0;display:none}
 </style></head><body>
 <h2>監視カメラ</h2>
 <p>状態: <span id="state" class="badge">...</span> <span id="rec" class="rec"></span>
@@ -66,6 +72,14 @@ pre{background:#111;color:#ddd;padding:.6rem;overflow:auto;max-height:18rem;font
  <small>ライブ映像を見ながら直す。変更は、カメラを再起動すると反映される（録画中なら、保存してから再起動する）。</small>
 </details>
 <div id="liveBox"><img id="live" alt="live"><small>ライブ映像（320x240・白黒。検知用の映像）</small></div>
+<div id="meterBox">
+ <h3>動体検知メーター</h3>
+ <p id="meterText">...</p>
+ <div id="bar"><div id="fill"></div><div id="thr" title="しきい値"></div></div>
+ <canvas id="hist" width="600" height="90"></canvas>
+ <small>前のフレームとの差が <span id="pxThr">?</span> を超えた画素が、画面全体の何 % か（直近 1 秒の最大値）。
+ 黒い線（しきい値）を超えると「動き」と判定して録画する。下のグラフは、直近 60 秒の推移。</small>
+</div>
 <p id="info"></p>
 <p id="diskWarn" class="warn" style="display:none"></p>
 <details id="logBox"><summary>ログ（最新）</summary><pre id="log"></pre></details>
@@ -120,6 +134,40 @@ async function logRefresh(){
   if(!$('logBox').open) return;
   try{ $('log').textContent=await (await fetch('/api/log')).text(); }catch(e){}
 }
+// ---- 動体検知メーター ----
+const HIST_SEC=60;
+let hist=[], meterBusy=false;   // hist: {t: 時刻(ms), r: 割合}
+const pct=x=>(x*100).toFixed(1)+'%';
+function drawMeter(m){
+  const thr=m.change_ratio||0.03, v=(m.ratio_peak!==undefined?m.ratio_peak:m.ratio), now=Date.now();
+  hist.push({t:now,r:v});
+  while(hist.length&&now-hist[0].t>HIST_SEC*1000) hist.shift();
+  let peak=0, peak30=0;
+  for(const h of hist){ if(h.r>peak) peak=h.r; if(now-h.t<=30000&&h.r>peak30) peak30=h.r; }
+  const max=Math.max(thr*2, peak*1.15, 0.01);   // バーの右端。しきい値の 2 倍か、最近の最大値（大きい方）
+  $('fill').style.width=Math.min(100,v/max*100)+'%';
+  $('fill').className=v>thr?'over':'';
+  $('thr').style.left=Math.min(100,thr/max*100)+'%';
+  $('meterText').textContent='現在 '+pct(v)+' ／ しきい値 '+pct(thr)+' ／ 直近 30 秒の最大 '+pct(peak30)+(v>thr?'　→ 動きを検知':'');
+  if(m.pixel_threshold!==null&&m.pixel_threshold!==undefined) $('pxThr').textContent=m.pixel_threshold;
+  const cv=$('hist'), ctx=cv.getContext('2d'), W=cv.width, H=cv.height, y=r=>H-Math.min(1,r/max)*H;
+  ctx.clearRect(0,0,W,H);
+  ctx.lineWidth=1; ctx.strokeStyle='#000'; ctx.setLineDash([4,3]);
+  ctx.beginPath(); ctx.moveTo(0,y(thr)); ctx.lineTo(W,y(thr)); ctx.stroke(); ctx.setLineDash([]);
+  ctx.lineWidth=2; ctx.strokeStyle='#2a9d4a'; ctx.beginPath();
+  hist.forEach((h,i)=>{const x=W-(now-h.t)/(HIST_SEC*1000)*W; if(i) ctx.lineTo(x,y(h.r)); else ctx.moveTo(x,y(h.r));});
+  ctx.stroke();
+}
+async function meterPoll(){
+  if(meterBusy) return;   // 前の取得が終わっていなければ、重ねない
+  meterBusy=true;
+  try{
+    const m=await (await fetch('/api/meter')).json();
+    if(m.running){ $('meterBox').style.display='block'; drawMeter(m); }
+    else { $('meterBox').style.display='none'; hist=[]; }
+  }catch(e){} finally{ meterBusy=false; }
+}
+setInterval(meterPoll,500);
 refresh(); setInterval(refresh,2000); setInterval(logRefresh,3000);
 $('logBox').addEventListener('toggle',logRefresh);
 </script></body></html>"""
@@ -313,6 +361,9 @@ class Handler(viewer.Handler):
         elif path == "/api/status":
             if self._authorized():
                 self._send_json(self._status())
+        elif path == "/api/meter":
+            if self._authorized():
+                self._send_json(self._meter())
         elif path == "/api/log":
             if self._authorized():
                 data = tail_lines(os.path.join(self.workdir, "logs", "surveillance.log")).encode("utf-8")
@@ -347,18 +398,32 @@ class Handler(viewer.Handler):
         token = base64.b64encode(f"{self.user}:{self.password}".encode()).decode()
         return {"Authorization": "Basic " + token}
 
-    def _live_recording(self) -> bool:
-        """子プロセスのライブ配信の /status から、録画中かどうかを得る。"""
+    def _live_status(self) -> dict:
+        """子プロセスのライブ配信の /status（録画中か、変化した画素の割合、しきい値）を得る。取れなければ空の辞書。"""
         try:
             conn = http.client.HTTPConnection("127.0.0.1", self.live_port, timeout=2)
             conn.request("GET", "/status", headers=self._upstream_headers())
             resp = conn.getresponse()
-            ok = resp.status == 200
-            data = json.loads(resp.read()) if ok else {}
+            data = json.loads(resp.read()) if resp.status == 200 else {}
             conn.close()
-            return bool(data.get("recording"))
+            return data if isinstance(data, dict) else {}
         except (OSError, ValueError, http.client.HTTPException):
-            return False
+            return {}
+
+    def _live_recording(self) -> bool:
+        return bool(self._live_status().get("recording"))
+
+    def _meter(self) -> dict:
+        """動体検知メーター用: 変化した画素の割合と、しきい値。監視が動いていなければ running=false。"""
+        if self.manager.snapshot()["state"] != "running":
+            return {"running": False}
+        s = self._live_status()
+        th = s.get("thresholds") or {}
+        if "ratio" not in s:
+            return {"running": False}
+        return {"running": True, "recording": bool(s.get("recording")), "ratio": s["ratio"],
+                "ratio_peak": s.get("ratio_peak", s["ratio"]),   # 直近 1 秒の最大（短い spike を見逃さない）
+                "change_ratio": th.get("change_ratio"), "pixel_threshold": th.get("pixel_threshold")}
 
     def _live(self):
         """子プロセスのライブ映像（MJPEG）を、そのまま中継する。"""
