@@ -1,3 +1,6 @@
+// 何を試したか: TODO（本人が記入）
+// なぜ次に進んだか: TODO（本人が記入）
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>

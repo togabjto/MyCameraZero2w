@@ -1,3 +1,7 @@
+# 何を試したか: TODO（本人が記入）
+# なぜ次に進んだか: TODO（本人が記入）
+# 既知の不整合: 1回録画すると break でループを抜けて終了する（待機モードに戻らない）。
+
 import time
 import ctypes
 import numpy as np

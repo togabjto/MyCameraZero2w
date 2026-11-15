@@ -1,3 +1,7 @@
+// 何を試したか: TODO（本人が記入）
+// なぜ次に進んだか: TODO（本人が記入）
+// 既知の不整合: 存在しない develop.py を system() で呼んでいる。
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
