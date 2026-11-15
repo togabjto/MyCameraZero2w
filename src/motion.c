@@ -5,11 +5,18 @@
 
 // 前回のフレームを記憶しておくためのポインタ
 static unsigned char* prev_frame = NULL;
+// prev_frame を確保したときのサイズ（画像サイズが途中で変わった場合の検出用）
+static int prev_size = 0;
 
 // Pythonから呼ばれる動体検知関数
 // current_frame: Pythonから渡される白黒画像の配列
 // width, height: 画像の幅と高さ
+// 戻り値: 1 = 動きあり, 0 = 動きなし（初回・サイズ変更直後を含む）, -1 = 引数不正またはメモリ確保に失敗
 int detect_motion(unsigned char* current_frame, int width, int height) {
+    // 引数の確認
+    if (current_frame == NULL || width <= 0 || height <= 0) {
+        return -1;
+    }
     int size = width * height;
     int threshold = 30; // ピクセルの色の変化を検知する閾値（感度）
     int changed_pixels = 0;
@@ -18,10 +25,20 @@ int detect_motion(unsigned char* current_frame, int width, int height) {
     int motion_trigger_count = (int)(size * 0.03); 
 
     // 初回実行時は比較対象がないので、現在のフレームを記憶して終了
+    // 画像サイズが前回と違う場合は、比較できないので確保し直す（今回は比較せず記憶のみ）
+    if (prev_frame != NULL && size != prev_size) {
+        free(prev_frame);
+        prev_frame = NULL;
+    }
+
     if (prev_frame == NULL) {
         prev_frame = (unsigned char*)malloc(size);
+        if (prev_frame == NULL) {
+            return -1; // メモリ確保に失敗
+        }
+        prev_size = size;
         memcpy(prev_frame, current_frame, size);
-        return 0; 
+        return 0;
     }
 
     // すべてのピクセルをチェックして、前回との差を計算
