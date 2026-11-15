@@ -1,0 +1,16 @@
+# ビルド生成物
+*.so
+
+# 実行時に作られるもの（録画データ・一時ファイル・ログ）
+movie/
+temp_*.h264
+*.mp4
+*.srt
+*.log
+
+# 実験用の出力
+raw_sensor_data.bin
+test_out.*
+*.avi
+
+__pycache__/
