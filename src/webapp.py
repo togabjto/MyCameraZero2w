@@ -80,6 +80,14 @@ pre{background:#111;color:#ddd;padding:.6rem;overflow:auto;max-height:18rem;font
  <small>前のフレームとの差が <span id="pxThr">?</span> を超えた画素が、画面全体の何 % か（直近 1 秒の最大値）。
  黒い線（しきい値）を超えると「動き」と判定して録画する。下のグラフは、直近 60 秒の推移。</small>
 </div>
+<details id="thBox" open><summary>感度の調整（しきい値）</summary>
+ <p>画素差: <input type="range" id="pxR" min="0" max="255" step="1"> <b id="pxV">-</b><br>
+  <small>前のフレームとの明るさの差が、これを超えた画素を「変化した画素」と数える（小さいほど敏感）</small></p>
+ <p>変化した画素の割合: <input type="range" id="crR" min="0.1" max="20" step="0.1"> <b id="crV">-</b><br>
+  <small>変化した画素が、画面のこの割合を超えたら「動き」とみなす（小さいほど敏感）</small></p>
+ <p><button id="btnThDefault">既定に戻す（30 / 3.0%）</button> <span id="thMsg"></span><br>
+  <small>動かすと、すぐに反映して保存する（カメラの再起動は不要）。メーターの線で、効果を見ながら調整する。</small></p>
+</details>
 <p id="info"></p>
 <p id="diskWarn" class="warn" style="display:none"></p>
 <details id="logBox"><summary>ログ（最新）</summary><pre id="log"></pre></details>
@@ -105,6 +113,19 @@ async function saveSettings(restart){
   }catch(e){$('msg').textContent='通信に失敗しました'}
   refresh();
 }
+// ---- しきい値の調整（スライダーを動かすと、少し待ってから、すぐに反映・保存する） ----
+let thInit=false, thTimer=null;
+function thLabels(){ $('pxV').textContent=$('pxR').value; $('crV').textContent=parseFloat($('crR').value).toFixed(1)+'%'; }
+async function sendThresholds(){
+  const body={pixel_threshold:parseInt($('pxR').value,10), change_ratio:Math.round(parseFloat($('crR').value)*10)/1000};
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'X-Requested-With':'fetch','Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json(); $('thMsg').textContent=j.message||'';
+  }catch(e){$('thMsg').textContent='通信に失敗しました'}
+}
+function thChanged(){ thLabels(); clearTimeout(thTimer); thTimer=setTimeout(sendThresholds,400); }
+$('pxR').oninput=thChanged; $('crR').oninput=thChanged;
+$('btnThDefault').onclick=()=>{ $('pxR').value=30; $('crR').value=3; thChanged(); };
 $('btnSave').onclick=()=>saveSettings(true);
 $('btnSaveOnly').onclick=()=>saveSettings(false);
 let setInit=false;   // 設定欄は、最初に 1 回だけ現在の値を入れる（編集中に上書きしない）
@@ -119,6 +140,11 @@ async function refresh(){
   $('btnStart').disabled=j.state!=='stopped'; $('btnStop').disabled=j.state!=='running';
   if(!setInit&&j.settings){$('rot').value=String(j.settings.rotation);$('hf').checked=j.settings.hflip;$('vf').checked=j.settings.vflip;setInit=true}
   $('btnSave').disabled=j.state==='stopping';
+  if(!thInit&&j.settings){   // しきい値の欄も、最初に 1 回だけ現在の値を入れる（操作中に上書きしない）
+    const crPct=Math.round(j.settings.change_ratio*1000)/10;
+    $('crR').max=Math.max(20,crPct);
+    $('pxR').value=j.settings.pixel_threshold; $('crR').value=crPct; thLabels(); thInit=true;
+  }
   const on=j.state==='running';
   if(on&&!liveOn){$('live').src='/live.mjpg?'+Date.now();liveOn=true}
   if(!on&&liveOn){$('live').removeAttribute('src');liveOn=false}
@@ -174,7 +200,10 @@ $('logBox').addEventListener('toggle',logRefresh);
 
 
 class Settings:
-    """カメラの向きの設定。workdir/settings.json に保存し、Web アプリを再起動しても残す。"""
+    """カメラの向きと、動体検知のしきい値の設定。workdir/settings.json に保存し、Web アプリを再起動しても残す。"""
+
+    KEYS = ("rotation", "hflip", "vflip", "pixel_threshold", "change_ratio")
+    ORIENTATION_KEYS = ("rotation", "hflip", "vflip")
 
     def __init__(self, path, defaults):
         self.path = path
@@ -182,8 +211,9 @@ class Settings:
         self.values = self.validate(defaults)
         try:
             with open(path, encoding="utf-8") as f:
-                self.values = self.validate(json.load(f))
-        except (OSError, ValueError):
+                # 古い版の設定ファイル（キーが足りない）でも読めるよう、起動時の指定を土台にして重ねる
+                self.values = self.validate({**self.values, **json.load(f)})
+        except (OSError, ValueError, TypeError):
             pass   # ファイルがない・壊れている場合は、既定値のまま
 
     @staticmethod
@@ -196,7 +226,13 @@ class Settings:
             raise ValueError("rotation は 0 か 180 です。")
         if not isinstance(hflip, bool) or not isinstance(vflip, bool):
             raise ValueError("hflip と vflip は true / false です。")
-        return {"rotation": int(rotation), "hflip": hflip, "vflip": vflip}
+        pixel, ratio = d.get("pixel_threshold", 30), d.get("change_ratio", 0.03)
+        if isinstance(pixel, bool) or not isinstance(pixel, int) or not 0 <= pixel <= 255:
+            raise ValueError("pixel_threshold は 0〜255 の整数です。")
+        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 < ratio <= 1:
+            raise ValueError("change_ratio は 0 より大きく 1 以下の数です。")
+        return {"rotation": int(rotation), "hflip": hflip, "vflip": vflip,
+                "pixel_threshold": pixel, "change_ratio": float(ratio)}
 
     def get(self):
         with self.lock:
@@ -458,8 +494,22 @@ class Handler(viewer.Handler):
         origin = self.headers.get("Origin")
         return not origin or urlparse(origin).netloc == self.headers.get("Host")
 
+    def _push_params(self, pixel, ratio) -> bool:
+        """動いている監視（子プロセス）に、新しいしきい値を送る。カメラの再起動は要らない。"""
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", self.live_port, timeout=3)
+            conn.request("POST", "/params", body=json.dumps({"pixel_threshold": pixel, "change_ratio": ratio}),
+                         headers=dict(self._upstream_headers(), **{"Content-Type": "application/json"}))
+            ok = conn.getresponse().status == 200
+            conn.close()
+            return ok
+        except (OSError, http.client.HTTPException):
+            return False
+
     def _save_settings(self):
-        """向きの設定を保存する。(ok, メッセージ, HTTP ステータス) を返す。restart が true なら、反映のため再起動する。"""
+        """設定（向き・しきい値）を保存する。(ok, メッセージ, HTTP ステータス) を返す。
+        送られた項目だけを、今の設定に重ねる。しきい値は、動いている監視にすぐ反映する（再起動は不要）。
+        向きは、restart が true なら、反映のため再起動する。"""
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -468,15 +518,34 @@ class Handler(viewer.Handler):
             return False, "リクエストの大きさが正しくありません。", HTTPStatus.BAD_REQUEST
         try:
             body = json.loads(self.rfile.read(n))
-            new = Settings.validate(body)
+            if not isinstance(body, dict):
+                raise ValueError("形式が正しくありません。")
+            provided = {k: v for k, v in body.items() if k in Settings.KEYS}
+            if not provided:
+                raise ValueError("変更する項目がありません。")
+            old = self.settings.get()
+            new = Settings.validate({**old, **provided})
         except ValueError as e:
             return False, f"設定が正しくありません: {e}", HTTPStatus.BAD_REQUEST
         self.settings.set(new)
-        if body.get("restart") is True:
-            ok, msg = self.manager.restart()
-            return ok, "保存しました。" + msg, (HTTPStatus.OK if ok else HTTPStatus.CONFLICT)
-        running = self.manager.snapshot()["state"] != "stopped"
-        return True, "保存しました。" + ("次にカメラを起動したときから反映されます。" if running else ""), HTTPStatus.OK
+
+        running = self.manager.snapshot()["state"] == "running"
+        msgs, ok, status = ["保存しました。"], True, HTTPStatus.OK
+        if "pixel_threshold" in provided or "change_ratio" in provided:
+            if running and self._push_params(new["pixel_threshold"], new["change_ratio"]):
+                msgs.append("しきい値を反映しました。")
+            elif running:
+                msgs.append("しきい値を反映できませんでした（次にカメラを起動したときから反映されます）。")
+            else:
+                msgs.append("しきい値は、次に監視を開始したときから反映されます。")
+        if any(k in provided for k in Settings.ORIENTATION_KEYS):
+            if body.get("restart") is True:
+                ok, msg = self.manager.restart()
+                msgs.append(msg)
+                status = HTTPStatus.OK if ok else HTTPStatus.CONFLICT
+            elif running:
+                msgs.append("向きは、次にカメラを起動したときから反映されます。")
+        return ok, "".join(msgs), status
 
     def do_POST(self):
         if not self._authorized():
@@ -497,14 +566,15 @@ class Handler(viewer.Handler):
 
 
 def build_command(args, settings=None):
-    """子プロセス（監視）の起動コマンド。向きは、保存された設定（なければ起動時の指定）を使う。"""
-    s = settings or {"rotation": args.rotation, "hflip": args.hflip, "vflip": args.vflip}
-    direction = ["--rotation", str(s["rotation"])] + (["--hflip"] if s["hflip"] else []) + (["--vflip"] if s["vflip"] else [])
+    """子プロセス（監視）の起動コマンド。向きとしきい値は、保存された設定（なければ起動時の指定）を使う。"""
+    s = settings or {"rotation": args.rotation, "hflip": args.hflip, "vflip": args.vflip,
+                     "pixel_threshold": args.pixel_threshold, "change_ratio": args.change_ratio}
+    options = (["--rotation", str(s["rotation"])] + (["--hflip"] if s["hflip"] else []) + (["--vflip"] if s["vflip"] else [])
+               + ["--pixel-threshold", str(s["pixel_threshold"]), "--change-ratio", str(s["change_ratio"])])
     if args.child_cmd:   # テスト用: 監視の代わりに別のコマンドを動かす
-        return shlex.split(args.child_cmd) + direction
+        return shlex.split(args.child_cmd) + options
     return [sys.executable, "-u", os.path.join(HERE, "surveillance.py"),
-            "--live-port", str(args.live_port), "--live-host", "127.0.0.1", "--live-user", args.user,
-            "--pixel-threshold", str(args.pixel_threshold), "--change-ratio", str(args.change_ratio)] + direction
+            "--live-port", str(args.live_port), "--live-host", "127.0.0.1", "--live-user", args.user] + options
 
 
 def main():
@@ -527,8 +597,12 @@ def main():
     os.makedirs(movie_dir, exist_ok=True)
 
     env = dict(os.environ, TOOLS_PASSWORD=args.password, PYTHONUNBUFFERED="1")   # パスワードは引数ではなく環境変数で渡す
-    settings = Settings(os.path.join(workdir, "settings.json"),
-                        {"rotation": args.rotation, "hflip": args.hflip, "vflip": args.vflip})
+    try:
+        settings = Settings(os.path.join(workdir, "settings.json"),
+                            {"rotation": args.rotation, "hflip": args.hflip, "vflip": args.vflip,
+                             "pixel_threshold": args.pixel_threshold, "change_ratio": args.change_ratio})
+    except ValueError as e:
+        sys.exit(f"エラー: 起動時の指定が正しくありません: {e}")
     manager = Manager(lambda: build_command(args, settings.get()), workdir, env,
                       os.path.join(workdir, "logs", "surveillance.log"))
 
