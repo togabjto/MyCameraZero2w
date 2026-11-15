@@ -102,6 +102,7 @@ is_recording = False
 record_until = 0
 current_file_num = 0
 temp_filename = ""
+last_motion_log = 0
 
 print("[WAITING] Monitoring for motion...", flush=True)
 
@@ -136,6 +137,11 @@ try:
 
         if is_moving == 1:
             record_until = current_time + 10.0
+
+            # 録画中に動きを検知し続けている間は、2 秒に 1 回、ログに出す（録画が終わらない原因の切り分け用）
+            if is_recording and current_time - last_motion_log >= 2.0:
+                print(f"[MOTION] {time.strftime('%H:%M:%S')} 録画中に動きを検知（録画を延長）", flush=True)
+                last_motion_log = current_time
 
             if not is_recording:
                 current_file_num = next_file_number
