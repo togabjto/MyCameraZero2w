@@ -50,10 +50,25 @@ parser.add_argument("--pixel-threshold", type=int, default=30,
                     help="画素の変化量のしきい値 0-255（既定: 30）")
 parser.add_argument("--change-ratio", type=float, default=0.03,
                     help="変化した画素の割合のしきい値 0〜1（既定: 0.03）")
+# ライブ映像の配信（既定は無効。--live-port を付けたときだけ動く）
+parser.add_argument("--live-port", type=int, default=0,
+                    help="ライブ映像を配信するポート番号（既定: 0 = 配信しない）")
+parser.add_argument("--live-host", default="0.0.0.0", help="ライブ映像の待ち受けアドレス（既定: 0.0.0.0）")
+parser.add_argument("--live-user", default="admin", help="ライブ映像のユーザー名（既定: admin）")
+parser.add_argument("--live-password", default=os.environ.get("TOOLS_PASSWORD"),
+                    help="ライブ映像のパスワード（環境変数 TOOLS_PASSWORD でも指定できる。配信するなら必須）")
 args = parser.parse_args()
 if lib.set_motion_params(args.pixel_threshold, args.change_ratio) != 0:
     sys.exit("エラー: しきい値が範囲外です（--pixel-threshold は 0-255、--change-ratio は 0 より大きく 1 以下）")
 print(f"[CONFIG] pixel_threshold={args.pixel_threshold} change_ratio={args.change_ratio}", flush=True)
+
+live = None
+if args.live_port:
+    if not args.live_password:
+        sys.exit("エラー: ライブ配信にはパスワードが必要です（--live-password か環境変数 TOOLS_PASSWORD）。")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 起動のしかたに依存せず、同じ場所の live_view を読む
+    from live_view import LiveView
+    live = LiveView(args.live_host, args.live_port, args.live_user, args.live_password)
 
 # ==========================================
 # 3. Camera Setup
@@ -70,6 +85,8 @@ print("\n" + "="*40, flush=True)
 print(" SYSTEM READY: Surveillance Camera", flush=True)
 print("="*40 + "\n", flush=True)
 time.sleep(2)
+if live:
+    live.start()
 
 is_recording = False
 record_until = 0
@@ -91,6 +108,9 @@ try:
         
         # print("[DEBUG] Frame OK", flush=True)
         # --------------------------------------
+
+        if live:
+            live.update(gray_frame, is_recording)
 
         is_moving = lib.detect_motion(gray_frame, 320, 240)
 
